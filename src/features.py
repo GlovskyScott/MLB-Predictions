@@ -124,10 +124,37 @@ def _get_park_factors(home_team_id: int) -> dict:
     }
 
 
+INNING_FEATURE_COLUMNS = [
+    'inning', 'is_home',
+    'batting_woba', 'batting_ops',
+    'pitching_era', 'pitching_whip',
+    'park_runs_factor',
+]
+
 _NEUTRAL_WEATHER = {
     'temperature_f': 72.0, 'wind_speed_mph': 0.0,
     'wind_direction_deg': 0.0, 'precipitation_mm': 0.0, 'is_dome': False,
 }
+
+
+def build_inning_feature_row(game_feats: dict, inning: int, batting_is_home: bool) -> dict:
+    """Build a single feature row for predicting whether a team scores in a given inning."""
+    pfx = 'home' if batting_is_home else 'away'
+    opp = 'away' if batting_is_home else 'home'
+    # Opposing starter for innings 1-6, bullpen for 7-9
+    if inning <= 6:
+        era_key, whip_key = f'{opp}_sp_era', f'{opp}_sp_whip'
+    else:
+        era_key, whip_key = f'{opp}_bullpen_era', f'{opp}_bullpen_whip'
+    return {
+        'inning': inning,
+        'is_home': int(batting_is_home),
+        'batting_woba': game_feats.get(f'{pfx}_team_woba', 0.315),
+        'batting_ops': game_feats.get(f'{pfx}_team_ops', 0.730),
+        'pitching_era': game_feats.get(era_key, 4.00),
+        'pitching_whip': game_feats.get(whip_key, 1.30),
+        'park_runs_factor': game_feats.get('park_runs_factor', 1.0),
+    }
 
 
 def build_game_features(game: dict, year: int = 2026, weather: dict = None) -> dict:

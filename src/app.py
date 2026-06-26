@@ -6,10 +6,13 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from src.fetcher import (
     get_schedule, get_pitching_stats, get_team_batting_stats,
-    get_bullpen_stats, get_season_schedule, get_weather_for_game,
+    get_bullpen_stats, get_season_schedule, get_weather_for_game, get_game_linescore,
 )
-from src.features import build_game_features, _NEUTRAL_WEATHER
-from src.model import train_models, load_models, models_exist, predict_game, build_training_data
+from src.features import build_game_features, build_inning_feature_row, _NEUTRAL_WEATHER
+from src.model import (
+    train_models, load_models, models_exist, predict_game, build_training_data,
+    train_inning_model, load_inning_model, inning_model_exists, predict_inning_probs,
+)
 from src.simulator import simulate_game
 from src.stadiums import get_stadium
 from src.teams import get_team_meta
@@ -60,6 +63,7 @@ _TRAINING_YEARS = [2024, 2025, 2026]
 _simulation_cache: list[dict] = []
 _last_simulated_date: str = ""
 _models_cache: dict = {}
+_inning_model_cache = None
 _results_cache: dict = {}
 _last_results_date: str = ""
 
@@ -130,11 +134,60 @@ def _get_models(force_retrain: bool = False) -> dict | None:
     return _models_cache
 
 
+def _build_inning_training_df(years: list[int] = None) -> pd.DataFrame:
+    if years is None:
+        years = _TRAINING_YEARS
+    rows = []
+    for year in years:
+        all_games = get_season_schedule(year)
+        completed = [
+            g for g in all_games
+            if g.get('status') == 'Final' and g.get('home_score') is not None
+        ]
+        # Parallel-fetch all linescores first (populates disk cache)
+        game_ids = [int(g['game_id']) for g in completed]
+        with ThreadPoolExecutor(max_workers=20) as pool:
+            futures = {pool.submit(get_game_linescore, gid): gid for gid in game_ids}
+            for fut in as_completed(futures):
+                fut.result()
+        for game in completed:
+            linescore = get_game_linescore(int(game['game_id']))
+            if not linescore:
+                continue
+            try:
+                game_feats = build_game_features(game, year=year, weather=_NEUTRAL_WEATHER)
+            except Exception:
+                continue
+            for inning in range(1, 10):
+                for batting_is_home in (True, False):
+                    key = 'home' if batting_is_home else 'away'
+                    inn_runs = linescore[key][inning - 1]
+                    row = build_inning_feature_row(game_feats, inning, batting_is_home)
+                    row['scored'] = 1 if inn_runs >= 1 else 0
+                    rows.append(row)
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
+def _get_inning_model(force_retrain: bool = False):
+    global _inning_model_cache
+    if _inning_model_cache and not force_retrain:
+        return _inning_model_cache
+    if not force_retrain and inning_model_exists():
+        _inning_model_cache = load_inning_model()
+        return _inning_model_cache
+    df = _build_inning_training_df()
+    if df.empty or len(df) < 1000:
+        return None
+    _inning_model_cache = train_inning_model(df)
+    return _inning_model_cache
+
+
 def run_daily_simulation(sim_date: str = None, n_simulations: int = 1000) -> list[dict]:
     if sim_date is None:
         sim_date = date.today().strftime('%Y-%m-%d')
 
     models = _get_models()
+    inning_model = _get_inning_model()
     games = get_schedule(sim_date)
     results = []
 
@@ -160,6 +213,15 @@ def run_daily_simulation(sim_date: str = None, n_simulations: int = 1000) -> lis
                 }
 
             sim = simulate_game(prediction, n_simulations=n_simulations)
+
+            # Override simulation-derived inning scoring pcts with ML model predictions
+            if inning_model:
+                try:
+                    inning_probs = predict_inning_probs(features, inning_model)
+                    sim['home_innings_scoring_pct'] = inning_probs['home']
+                    sim['away_innings_scoring_pct'] = inning_probs['away']
+                except Exception:
+                    pass
             home_meta = get_team_meta(game['home_id'])
             away_meta = get_team_meta(game['away_id'])
             results.append({
@@ -349,9 +411,11 @@ def create_app(testing: bool = False) -> Flask:
 
     @app.route('/retrain', methods=['POST'])
     def retrain():
-        global _models_cache
+        global _models_cache, _inning_model_cache
         _models_cache = {}
+        _inning_model_cache = None
         _get_models(force_retrain=True)
+        _get_inning_model(force_retrain=True)
         return redirect(url_for('index'))
 
     return app

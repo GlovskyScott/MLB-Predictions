@@ -3,6 +3,7 @@ import pybaseball
 import pandas as pd
 import numpy as np
 import requests
+import threading
 from pathlib import Path
 from datetime import date
 
@@ -14,6 +15,10 @@ OPEN_METEO_HISTORICAL_URL = "https://archive-api.open-meteo.com/v1/archive"
 
 _WEATHER_CACHE_FILE = _DATA_DIR / "weather_cache.csv"
 _weather_cache: dict = {}  # (date, lat, lon) → weather dict, in-memory layer
+
+_LINESCORE_CACHE_FILE = _DATA_DIR / "linescore_cache.csv"
+_linescore_cache: dict = {}  # game_pk → {home: [9 ints], away: [9 ints]}
+_linescore_cache_lock = threading.Lock()
 
 def _load_weather_cache() -> None:
     global _weather_cache
@@ -129,6 +134,56 @@ def get_season_schedule(year: int) -> list[dict]:
     df = pd.DataFrame(all_games)
     df.to_csv(cache_file, index=False)
     return all_games
+
+
+def _load_linescore_cache() -> None:
+    global _linescore_cache
+    if _linescore_cache or not _LINESCORE_CACHE_FILE.exists():
+        return
+    try:
+        df = pd.read_csv(_LINESCORE_CACHE_FILE)
+        for _, row in df.iterrows():
+            gid = int(row['game_pk'])
+            _linescore_cache[gid] = {
+                'home': [int(row.get(f'home_inn{i}', 0)) for i in range(1, 10)],
+                'away': [int(row.get(f'away_inn{i}', 0)) for i in range(1, 10)],
+            }
+    except Exception:
+        pass
+
+
+def get_game_linescore(game_pk: int) -> dict | None:
+    """Fetch per-inning run totals for a completed game, with disk cache."""
+    _load_linescore_cache()
+    if game_pk in _linescore_cache:
+        return _linescore_cache[game_pk]
+    try:
+        data = statsapi.get('game', {
+            'gamePk': game_pk,
+            'fields': 'liveData,linescore,innings,num,home,away,runs',
+        })
+        innings_data = data['liveData']['linescore']['innings']
+        home_runs = [0] * 9
+        away_runs = [0] * 9
+        for inn in innings_data:
+            idx = int(inn['num']) - 1
+            if 0 <= idx < 9:
+                home_runs[idx] = int(inn.get('home', {}).get('runs', 0) or 0)
+                away_runs[idx] = int(inn.get('away', {}).get('runs', 0) or 0)
+        result = {'home': home_runs, 'away': away_runs}
+        with _linescore_cache_lock:
+            _linescore_cache[game_pk] = result
+            row_data = {'game_pk': game_pk}
+            for i in range(9):
+                row_data[f'home_inn{i + 1}'] = home_runs[i]
+                row_data[f'away_inn{i + 1}'] = away_runs[i]
+            pd.DataFrame([row_data]).to_csv(
+                _LINESCORE_CACHE_FILE, mode='a',
+                header=not _LINESCORE_CACHE_FILE.exists(), index=False,
+            )
+        return result
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------

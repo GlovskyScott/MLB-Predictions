@@ -3,7 +3,7 @@ import pandas as pd
 import joblib
 from pathlib import Path
 from xgboost import XGBClassifier, XGBRegressor
-from src.features import FEATURE_COLUMNS
+from src.features import FEATURE_COLUMNS, INNING_FEATURE_COLUMNS, build_inning_feature_row
 
 _DEFAULT_MODEL_DIR = Path(__file__).parent.parent / "data"
 
@@ -82,6 +82,50 @@ def models_exist(model_dir: Path = None) -> bool:
         (model_dir / f).exists()
         for f in ['model_win.pkl', 'model_runs_home.pkl', 'model_runs_away.pkl']
     )
+
+
+def inning_model_exists(model_dir: Path = None) -> bool:
+    if model_dir is None:
+        model_dir = _DEFAULT_MODEL_DIR
+    return (Path(model_dir) / 'model_inning.pkl').exists()
+
+
+def train_inning_model(df: pd.DataFrame, model_dir: Path = None) -> XGBClassifier:
+    """Train a per-inning scoring probability classifier. Label column: 'scored' (0/1)."""
+    if model_dir is None:
+        model_dir = _DEFAULT_MODEL_DIR
+    model_dir = Path(model_dir)
+    model_dir.mkdir(parents=True, exist_ok=True)
+
+    X = df[INNING_FEATURE_COLUMNS].fillna(df[INNING_FEATURE_COLUMNS].median()).values
+    y = df['scored'].astype(int).values
+
+    model = XGBClassifier(
+        n_estimators=300, max_depth=4, learning_rate=0.05,
+        subsample=0.8, colsample_bytree=0.8,
+        eval_metric='logloss', random_state=42, n_jobs=-1,
+    )
+    model.fit(X, y)
+    joblib.dump(model, model_dir / 'model_inning.pkl')
+    return model
+
+
+def load_inning_model(model_dir: Path = None) -> XGBClassifier:
+    if model_dir is None:
+        model_dir = _DEFAULT_MODEL_DIR
+    return joblib.load(Path(model_dir) / 'model_inning.pkl')
+
+
+def predict_inning_probs(game_feats: dict, inning_model: XGBClassifier) -> dict:
+    """Return P(score >= 1 run) for each inning as percentages, for both teams."""
+    home_rows = [build_inning_feature_row(game_feats, i, True) for i in range(1, 10)]
+    away_rows = [build_inning_feature_row(game_feats, i, False) for i in range(1, 10)]
+    X = pd.DataFrame(home_rows + away_rows)[INNING_FEATURE_COLUMNS].fillna(0).values
+    probs = inning_model.predict_proba(X)[:, 1]
+    return {
+        'home': [round(float(p) * 100, 1) for p in probs[:9]],
+        'away': [round(float(p) * 100, 1) for p in probs[9:]],
+    }
 
 
 def predict_game(features: dict, models: dict) -> dict:
