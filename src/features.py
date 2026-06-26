@@ -3,11 +3,15 @@ import numpy as np
 from pathlib import Path
 from src.fetcher import (
     get_pitching_stats, get_batting_stats, get_team_batting_stats,
-    get_bullpen_stats, get_weather_for_game
+    get_bullpen_stats, get_weather_for_game, get_pitcher_splits, get_game_lineup,
+    get_pitcher_days_rest, get_team_recent_runs, get_bullpen_stress_l3,
+    get_pitcher_handedness, get_team_batting_vs_hand,
 )
 from src.stadiums import get_stadium, classify_wind
 
 _DATA_DIR = Path(__file__).parent.parent / "data"
+
+FEATURE_VERSION = 2  # Increment whenever FEATURE_COLUMNS changes
 
 # Canonical ordered list of all features fed to XGBoost
 FEATURE_COLUMNS = [
@@ -31,6 +35,15 @@ FEATURE_COLUMNS = [
     'temperature_f', 'wind_speed_mph', 'wind_out', 'wind_in', 'precipitation_flag',
     # Context
     'is_dome',
+    # Pitcher rest (days since last start)
+    'away_sp_days_rest', 'home_sp_days_rest',
+    # Recent team offensive form (runs per game, last 15 games)
+    'away_runs_l15', 'home_runs_l15',
+    # Bullpen workload (late-inning runs allowed, last 3 games — proxy for fatigue)
+    'away_bullpen_stress_l3', 'home_bullpen_stress_l3',
+    # Handedness matchup
+    'away_sp_is_lhp', 'home_sp_is_lhp',
+    'away_bat_ops_vs_sp_hand', 'home_bat_ops_vs_sp_hand',
 ]
 
 # MLB Stats API team_id → FanGraphs abbreviation
@@ -108,6 +121,35 @@ def _get_bullpen_stats(team_id: int, bullpen_df: pd.DataFrame) -> dict:
     }
 
 
+def _get_lineup_batting(player_names: list, batting_df: pd.DataFrame) -> dict | None:
+    """Compute aggregate wOBA/OPS for a specific lineup.
+
+    Returns None when fewer than 3 players are matched, signalling the caller to
+    fall back to team-level batting stats.
+    """
+    if not player_names or batting_df.empty:
+        return None
+    rows = []
+    for name in player_names:
+        mask = batting_df['Name'].str.lower().str.strip() == name.lower().strip()
+        matches = batting_df[mask]
+        if matches.empty:
+            last = name.split()[-1].lower() if name.split() else ''
+            if last:
+                mask2 = batting_df['Name'].str.lower().str.contains(last, na=False)
+                matches = batting_df[mask2]
+        if not matches.empty:
+            rows.append(matches.iloc[0])
+    if len(rows) < 3:
+        return None
+    df = pd.DataFrame(rows)
+    pa = df['PA'].fillna(1).replace(0, 1)
+    return {
+        'woba': float(np.average(df['wOBA'].fillna(0.315), weights=pa)),
+        'ops': float(np.average(df['OPS'].fillna(0.730), weights=pa)),
+    }
+
+
 def _get_park_factors(home_team_id: int) -> dict:
     pf_file = _DATA_DIR / "park_factors.csv"
     defaults = {'runs_factor': 1.0, 'hr_factor': 1.0}
@@ -126,8 +168,9 @@ def _get_park_factors(home_team_id: int) -> dict:
 
 INNING_FEATURE_COLUMNS = [
     'inning', 'is_home',
-    'batting_woba', 'batting_ops',
+    'batting_woba', 'batting_ops', 'batting_runs_l15',
     'pitching_era', 'pitching_whip',
+    'sp_days_rest', 'bullpen_stress_l3',
     'park_runs_factor',
 ]
 
@@ -141,26 +184,33 @@ def build_inning_feature_row(game_feats: dict, inning: int, batting_is_home: boo
     """Build a single feature row for predicting whether a team scores in a given inning."""
     pfx = 'home' if batting_is_home else 'away'
     opp = 'away' if batting_is_home else 'home'
-    # Opposing starter for innings 1-6, bullpen for 7-9
     if inning <= 6:
         era_key, whip_key = f'{opp}_sp_era', f'{opp}_sp_whip'
+        sp_days_rest = float(game_feats.get(f'{opp}_sp_days_rest', 5))
     else:
         era_key, whip_key = f'{opp}_bullpen_era', f'{opp}_bullpen_whip'
+        sp_days_rest = 0.0  # bullpen doesn't have a single starter's rest
     return {
         'inning': inning,
         'is_home': int(batting_is_home),
         'batting_woba': game_feats.get(f'{pfx}_team_woba', 0.315),
         'batting_ops': game_feats.get(f'{pfx}_team_ops', 0.730),
+        'batting_runs_l15': game_feats.get(f'{pfx}_runs_l15', 4.5),
         'pitching_era': game_feats.get(era_key, 4.00),
         'pitching_whip': game_feats.get(whip_key, 1.30),
+        'sp_days_rest': sp_days_rest,
+        'bullpen_stress_l3': game_feats.get(f'{opp}_bullpen_stress_l3', 3.0),
         'park_runs_factor': game_feats.get('park_runs_factor', 1.0),
     }
 
 
-def build_game_features(game: dict, year: int = 2026, weather: dict = None) -> dict:
+def build_game_features(game: dict, year: int = 2026, weather: dict = None,
+                        for_training: bool = False) -> dict:
     """Build a numeric feature vector for one game.
 
     Pass weather=None to fetch live weather, or supply a pre-built dict to skip the API call.
+    Pass for_training=True to skip slow external API calls (pitcher splits, handedness,
+    lineup, team batting splits) and use defaults — keeps training fast.
     """
     pitching_df = get_pitching_stats(year)
     batting_df = get_team_batting_stats(year)
@@ -182,11 +232,66 @@ def build_game_features(game: dict, year: int = 2026, weather: dict = None) -> d
 
     home_sp = _get_pitcher_stats(game.get('home_probable_pitcher', ''), pitching_df)
     away_sp = _get_pitcher_stats(game.get('away_probable_pitcher', ''), pitching_df)
+
     home_bat = _get_team_batting(home_id, batting_df)
     away_bat = _get_team_batting(away_id, batting_df)
+
+    if not for_training:
+        # Override aggregate pitcher stats with context-specific home/away splits
+        home_pitcher_splits = get_pitcher_splits(game.get('home_probable_pitcher', ''), year)
+        away_pitcher_splits = get_pitcher_splits(game.get('away_probable_pitcher', ''), year)
+
+        def _apply_splits(sp: dict, splits: dict, side: str) -> None:
+            s = splits.get(side, {})
+            for sp_key, api_key in [('era', 'era'), ('whip', 'whip'), ('k9', 'k9'),
+                                      ('bb9', 'bb9'), ('hr9', 'hr9'), ('ip', 'ip')]:
+                if s.get(api_key) is not None:
+                    sp[sp_key] = s[api_key]
+            if s.get('era') is not None:
+                sp['fip'] = s['era']
+                sp['xfip'] = s['era']
+
+        _apply_splits(home_sp, home_pitcher_splits, 'home')
+        _apply_splits(away_sp, away_pitcher_splits, 'away')
+
+        # Use actual lineup batting stats when the day's batting order is available
+        batting_df_individual = get_batting_stats(year)
+        lineup = get_game_lineup(game.get('game_id', 0))
+        home_lineup_bat = _get_lineup_batting(lineup.get('home', []), batting_df_individual)
+        away_lineup_bat = _get_lineup_batting(lineup.get('away', []), batting_df_individual)
+        if home_lineup_bat is not None:
+            home_bat = home_lineup_bat
+        if away_lineup_bat is not None:
+            away_bat = away_lineup_bat
+
     home_bp = _get_bullpen_stats(home_id, bullpen_df)
     away_bp = _get_bullpen_stats(away_id, bullpen_df)
     park = _get_park_factors(home_id)
+
+    game_date = game.get('game_date', '')
+
+    # Pitcher days of rest — computed from cached schedule, fast for both training and inference
+    home_days_rest = get_pitcher_days_rest(game.get('home_probable_pitcher', ''), game_date, year)
+    away_days_rest = get_pitcher_days_rest(game.get('away_probable_pitcher', ''), game_date, year)
+
+    # Recent team offensive form — computed from cached schedule, fast for both
+    home_runs_l15 = get_team_recent_runs(home_id, game_date, year)
+    away_runs_l15 = get_team_recent_runs(away_id, game_date, year)
+
+    # Bullpen workload — from schedule + linescores; cache_only avoids API calls during training
+    home_bp_stress = get_bullpen_stress_l3(home_id, game_date, year, cache_only=for_training)
+    away_bp_stress = get_bullpen_stress_l3(away_id, game_date, year, cache_only=for_training)
+
+    # Handedness matchup — disk-cached after prefetch_historical.py, fast for both training and inference
+    home_sp_hand = get_pitcher_handedness(game.get('home_probable_pitcher', ''))
+    away_sp_hand = get_pitcher_handedness(game.get('away_probable_pitcher', ''))
+    home_bat_splits = get_team_batting_vs_hand(home_id, year)
+    away_bat_splits = get_team_batting_vs_hand(away_id, year)
+
+    home_sp_is_lhp = 1.0 if home_sp_hand == 'L' else 0.0
+    away_sp_is_lhp = 1.0 if away_sp_hand == 'L' else 0.0
+    away_bat_ops_vs_sp = away_bat_splits['vs_lhp'] if home_sp_hand == 'L' else away_bat_splits['vs_rhp']
+    home_bat_ops_vs_sp = home_bat_splits['vs_lhp'] if away_sp_hand == 'L' else home_bat_splits['vs_rhp']
 
     wind_dir = weather.get('wind_direction_deg', 0.0)
     wind_label = classify_wind(wind_dir, home_id)
@@ -224,4 +329,14 @@ def build_game_features(game: dict, year: int = 2026, weather: dict = None) -> d
         'wind_in': 1.0 if wind_label == 'in_from_cf' else 0.0,
         'precipitation_flag': 1.0 if weather.get('precipitation_mm', 0) > 0.1 else 0.0,
         'is_dome': 1.0 if is_dome else 0.0,
+        'away_sp_days_rest': float(away_days_rest),
+        'home_sp_days_rest': float(home_days_rest),
+        'away_runs_l15': away_runs_l15,
+        'home_runs_l15': home_runs_l15,
+        'away_bullpen_stress_l3': away_bp_stress,
+        'home_bullpen_stress_l3': home_bp_stress,
+        'away_sp_is_lhp': away_sp_is_lhp,
+        'home_sp_is_lhp': home_sp_is_lhp,
+        'away_bat_ops_vs_sp_hand': away_bat_ops_vs_sp,
+        'home_bat_ops_vs_sp_hand': home_bat_ops_vs_sp,
     }

@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# Data files — released separately via GitHub releases (data-cache tag)
+data/
+*.pkl
+model_meta.json
+
+# Build artifacts
+*.tar.gz

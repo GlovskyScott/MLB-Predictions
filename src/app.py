@@ -7,8 +7,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from src.fetcher import (
     get_schedule, get_pitching_stats, get_team_batting_stats,
     get_bullpen_stats, get_season_schedule, get_weather_for_game, get_game_linescore,
+    bootstrap_data_cache, bootstrap_model_cache,
 )
-from src.features import build_game_features, build_inning_feature_row, _NEUTRAL_WEATHER
+from src.features import build_game_features, build_inning_feature_row, _NEUTRAL_WEATHER, FEATURE_VERSION
 from src.model import (
     train_models, load_models, models_exist, predict_game, build_training_data,
     train_inning_model, load_inning_model, inning_model_exists, predict_inning_probs,
@@ -78,6 +79,7 @@ def _write_model_meta(n_games: int) -> None:
     _MODEL_META_FILE.write_text(json.dumps({
         'training_years': _TRAINING_YEARS,
         'n_games': n_games,
+        'feature_version': FEATURE_VERSION,
     }))
 
 
@@ -86,6 +88,8 @@ def _needs_retrain() -> bool:
         return True
     meta = _read_model_meta()
     if meta.get('training_years') != _TRAINING_YEARS:
+        return True
+    if meta.get('feature_version') != FEATURE_VERSION:
         return True
     return False
 
@@ -103,7 +107,7 @@ def _build_training_df(years: list[int] = None) -> pd.DataFrame:
         ]
         for game in completed:
             try:
-                features = build_game_features(game, year=year, weather=_NEUTRAL_WEATHER)
+                features = build_game_features(game, year=year, weather=_NEUTRAL_WEATHER, for_training=True)
                 features['home_score'] = float(game['home_score'])
                 features['away_score'] = float(game['away_score'])
                 features['home_win'] = 1 if float(game['home_score']) > float(game['away_score']) else 0
@@ -155,7 +159,7 @@ def _build_inning_training_df(years: list[int] = None) -> pd.DataFrame:
             if not linescore:
                 continue
             try:
-                game_feats = build_game_features(game, year=year, weather=_NEUTRAL_WEATHER)
+                game_feats = build_game_features(game, year=year, weather=_NEUTRAL_WEATHER, for_training=True)
             except Exception:
                 continue
             for inning in range(1, 10):
@@ -334,15 +338,25 @@ def _get_results_for_date(date_str: str) -> dict:
 
 
 def _aggregate_days(n_days: int) -> dict:
-    """Aggregate prediction accuracy across the past n_days using parallel disk-cached fetches."""
+    """Aggregate prediction accuracy across the past n_days using parallel disk-cached fetches.
+
+    Only reads dates that already have a disk cache — never triggers live computation.
+    This keeps the index page fast on first load.
+    """
     dates = [
         (date.today() - timedelta(days=i)).strftime('%Y-%m-%d')
         for i in range(1, n_days + 1)
     ]
 
+    # Only process dates that are already cached on disk
+    cached_dates = [
+        d for d in dates
+        if (_RESULTS_CACHE_DIR / f"{d}.json").exists()
+    ]
+
     daily = []
     with ThreadPoolExecutor(max_workers=6) as pool:
-        futures = {pool.submit(_get_results_for_date, d): d for d in dates}
+        futures = {pool.submit(_get_results_for_date, d): d for d in cached_dates}
         for fut in as_completed(futures):
             try:
                 r = fut.result()
@@ -375,6 +389,9 @@ def _aggregate_days(n_days: int) -> dict:
 def create_app(testing: bool = False) -> Flask:
     app = Flask(__name__, template_folder='../templates', static_folder='../static')
     app.config['TESTING'] = testing
+    if not testing:
+        bootstrap_data_cache()
+        bootstrap_model_cache()
 
     @app.route('/')
     def index():

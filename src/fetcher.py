@@ -10,6 +10,60 @@ from datetime import date
 _DATA_DIR = Path(__file__).parent.parent / "data"
 _DATA_DIR.mkdir(exist_ok=True)
 
+_DATA_RELEASE_TAG = "data-cache"
+_DATA_RELEASE_ASSET = "data_cache.tar.gz"
+_MODEL_RELEASE_TAG = "latest"
+_MODEL_PKLS = ["model_win.pkl", "model_runs_home.pkl", "model_runs_away.pkl", "model_inning.pkl"]
+
+
+def bootstrap_model_cache(repo: str = "jackleh/MLB-Predictions") -> None:
+    """Download model pkl files from the latest release into data/ if missing.
+
+    Safe to call repeatedly — no-op if all pkls already exist.
+    """
+    if all((_DATA_DIR / p).exists() for p in _MODEL_PKLS):
+        return
+    import subprocess
+    print("Model files not found — downloading from GitHub release...")
+    try:
+        for pkl in _MODEL_PKLS:
+            if not (_DATA_DIR / pkl).exists():
+                subprocess.run(
+                    ["gh", "release", "download", _MODEL_RELEASE_TAG,
+                     "-R", repo, "-D", str(_DATA_DIR), "--pattern", pkl],
+                    check=True, capture_output=True,
+                )
+        print("Model files restored.")
+    except Exception as e:
+        print(f"Could not download model files ({e}). Will retrain.")
+
+
+def bootstrap_data_cache(repo: str = "jackleh/MLB-Predictions") -> None:
+    """Download and extract the data release if the cache is empty.
+
+    Call this once at startup before any data fetching. Safe to call repeatedly —
+    it's a no-op if cached CSVs already exist.
+    """
+    sentinel = _DATA_DIR / "schedule_2024.csv"
+    if sentinel.exists():
+        return
+    import subprocess, tempfile, tarfile
+    print("Data cache not found — downloading from GitHub release...")
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(
+                ["gh", "release", "download", _DATA_RELEASE_TAG,
+                 "-R", repo, "-D", tmp, "--pattern", _DATA_RELEASE_ASSET],
+                check=True, capture_output=True,
+            )
+            asset_path = Path(tmp) / _DATA_RELEASE_ASSET
+            with tarfile.open(asset_path, "r:gz") as tf:
+                tf.extractall(_DATA_DIR)
+        print("Data cache restored.")
+    except Exception as e:
+        print(f"Could not download data cache ({e}). Will fetch fresh data instead.")
+
+
 OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 OPEN_METEO_HISTORICAL_URL = "https://archive-api.open-meteo.com/v1/archive"
 
@@ -19,6 +73,37 @@ _weather_cache: dict = {}  # (date, lat, lon) → weather dict, in-memory layer
 _LINESCORE_CACHE_FILE = _DATA_DIR / "linescore_cache.csv"
 _linescore_cache: dict = {}  # game_pk → {home: [9 ints], away: [9 ints]}
 _linescore_cache_lock = threading.Lock()
+
+_season_schedule_memory: dict = {}  # year → list[dict], prevents repeated CSV reads
+
+_pitcher_splits_cache: dict = {}  # (player_name_lower, year) → splits dict
+_lineup_cache: dict = {}  # game_pk → {'home': [names], 'away': [names]}
+_days_rest_cache: dict = {}  # (pitcher_name_lower, game_date, year) → int
+_recent_runs_cache: dict = {}  # (team_id, game_date, year, n_games) → float
+_bullpen_stress_cache: dict = {}  # (team_id, game_date, year) → float
+_pitcher_hand_cache: dict = {}  # player_name_lower → 'L' or 'R'
+_team_batting_splits_cache: dict = {}  # (team_id, year) → {'vs_lhp': ops, 'vs_rhp': ops}
+
+# Disk cache files for new API lookups (avoids re-fetching on every restart/retrain)
+_PITCHER_SPLITS_CACHE_FILE = _DATA_DIR / "pitcher_splits_{year}.json"
+_PITCHER_HAND_CACHE_FILE = _DATA_DIR / "pitcher_hand.json"
+_TEAM_BATTING_SPLITS_CACHE_FILE = _DATA_DIR / "team_batting_splits_{year}.json"
+
+
+def _load_json_cache(path: Path) -> dict:
+    try:
+        import json
+        return json.loads(path.read_text()) if path.exists() else {}
+    except Exception:
+        return {}
+
+
+def _save_json_cache(path: Path, data: dict) -> None:
+    try:
+        import json
+        path.write_text(json.dumps(data))
+    except Exception:
+        pass
 
 def _load_weather_cache() -> None:
     global _weather_cache
@@ -84,6 +169,288 @@ def get_probable_pitchers(game_id: int, game: dict) -> dict:
     }
 
 
+def get_pitcher_splits(player_name: str, year: int) -> dict:
+    """Return home/away pitching splits for a pitcher via the MLB Stats API.
+
+    Returns {'home': {era, whip, k9, bb9, hr9, ip}, 'away': {...}}.
+    Either or both keys may be absent if data is unavailable.
+    """
+    if not player_name:
+        return {}
+    cache_key = (player_name.lower().strip(), year)
+    if cache_key in _pitcher_splits_cache:
+        return _pitcher_splits_cache[cache_key]
+
+    # Load disk cache on first access for this year
+    disk_cache_file = Path(str(_PITCHER_SPLITS_CACHE_FILE).replace('{year}', str(year)))
+    disk_key = player_name.lower().strip()
+    if not _pitcher_splits_cache:
+        disk_data = _load_json_cache(disk_cache_file)
+        for k, v in disk_data.items():
+            _pitcher_splits_cache[(k, year)] = v
+    if cache_key in _pitcher_splits_cache:
+        return _pitcher_splits_cache[cache_key]
+
+    def _sf(val):
+        try:
+            return float(val) if val and str(val) not in ('-.--', '--', '') else None
+        except (TypeError, ValueError):
+            return None
+
+    try:
+        results = statsapi.lookup_player(player_name)
+        if not results:
+            last = player_name.split()[-1] if ' ' in player_name else ''
+            results = statsapi.lookup_player(last) if last else []
+        if not results:
+            _pitcher_splits_cache[cache_key] = {}
+            return {}
+        player_id = results[0]['id']
+        resp = requests.get(
+            f"https://statsapi.mlb.com/api/v1/people/{player_id}/stats",
+            params={'stats': 'homeAndAway', 'group': 'pitching', 'season': year},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        out: dict = {}
+        for block in resp.json().get('stats', []):
+            for s in block.get('splits', []):
+                code = s.get('split', {}).get('code', '')
+                st = s.get('stat', {})
+                key = 'home' if code == 'H' else 'away' if code == 'A' else None
+                if not key:
+                    continue
+                out[key] = {
+                    'era': _sf(st.get('era')),
+                    'whip': _sf(st.get('whip')),
+                    'k9': _sf(st.get('strikeoutsPer9Inn')),
+                    'bb9': _sf(st.get('walksPer9Inn')),
+                    'hr9': _sf(st.get('homeRunsPer9')),
+                    'ip': _sf(st.get('inningsPitched')) or 0.0,
+                }
+        _pitcher_splits_cache[cache_key] = out
+        # Persist to disk so retrain doesn't re-fetch
+        disk_cache_file = Path(str(_PITCHER_SPLITS_CACHE_FILE).replace('{year}', str(year)))
+        all_disk = _load_json_cache(disk_cache_file)
+        all_disk[player_name.lower().strip()] = out
+        _save_json_cache(disk_cache_file, all_disk)
+        return out
+    except Exception:
+        _pitcher_splits_cache[cache_key] = {}
+        return {}
+
+
+def get_game_lineup(game_pk: int) -> dict:
+    """Return the batting order for a game.
+
+    Returns {'home': [full_names], 'away': [full_names]} or {} if not yet posted.
+    """
+    if not game_pk:
+        return {}
+    if game_pk in _lineup_cache:
+        return _lineup_cache[game_pk]
+    try:
+        data = statsapi.get('game', {
+            'gamePk': game_pk,
+            'fields': 'gameData,players,liveData,boxscore,teams,home,away,battingOrder',
+        })
+        box = data.get('liveData', {}).get('boxscore', {}).get('teams', {})
+        home_order = box.get('home', {}).get('battingOrder', [])
+        away_order = box.get('away', {}).get('battingOrder', [])
+        if not home_order and not away_order:
+            return {}
+        players_data = data.get('gameData', {}).get('players', {})
+
+        def _name(pid):
+            return players_data.get(f'ID{pid}', {}).get('fullName', '')
+
+        result = {
+            'home': [n for pid in home_order if (n := _name(pid))],
+            'away': [n for pid in away_order if (n := _name(pid))],
+        }
+        _lineup_cache[game_pk] = result
+        return result
+    except Exception:
+        return {}
+
+
+def get_pitcher_days_rest(pitcher_name: str, game_date: str, year: int) -> int:
+    """Return days since pitcher's last start. Returns 5 (normal rest) if unknown."""
+    if not pitcher_name or not game_date:
+        return 5
+    cache_key = (pitcher_name.lower().strip(), game_date, year)
+    if cache_key in _days_rest_cache:
+        return _days_rest_cache[cache_key]
+    try:
+        schedule = get_season_schedule(year)
+        pitcher_lower = pitcher_name.lower().strip()
+        prev_starts = [
+            g['game_date'] for g in schedule
+            if g.get('game_date', '') < game_date
+            and (g.get('home_probable_pitcher', '').lower().strip() == pitcher_lower
+                 or g.get('away_probable_pitcher', '').lower().strip() == pitcher_lower)
+        ]
+        if not prev_starts:
+            _days_rest_cache[cache_key] = 5
+            return 5
+        from datetime import date as _d
+        rest = (_d.fromisoformat(game_date) - _d.fromisoformat(max(prev_starts))).days
+        result = max(1, min(rest, 15))
+        _days_rest_cache[cache_key] = result
+        return result
+    except Exception:
+        _days_rest_cache[cache_key] = 5
+        return 5
+
+
+def get_team_recent_runs(team_id: int, game_date: str, year: int, n_games: int = 15) -> float:
+    """Return average runs scored per game across the last n_games completed games."""
+    if not game_date:
+        return 4.5
+    cache_key = (team_id, game_date, year, n_games)
+    if cache_key in _recent_runs_cache:
+        return _recent_runs_cache[cache_key]
+    try:
+        schedule = get_season_schedule(year)
+        recent = sorted(
+            [g for g in schedule
+             if (g.get('home_id') == team_id or g.get('away_id') == team_id)
+             and g.get('game_date', '') < game_date
+             and g.get('status') == 'Final'
+             and g.get('home_score') is not None],
+            key=lambda x: x['game_date'], reverse=True,
+        )[:n_games]
+        if not recent:
+            return 4.5
+        runs = [
+            float(g['home_score'] if g.get('home_id') == team_id else g['away_score'])
+            for g in recent
+        ]
+        result = round(sum(runs) / len(runs), 3)
+        _recent_runs_cache[cache_key] = result
+        return result
+    except Exception:
+        return 4.5
+
+
+def get_bullpen_stress_l3(team_id: int, game_date: str, year: int,
+                          cache_only: bool = False) -> float:
+    """Return total late-inning (7-9) runs allowed in the last 3 games.
+
+    Proxy for bullpen workload: a high value means the bullpen was used heavily.
+    Pass cache_only=True to avoid network calls (for training).
+    """
+    if not game_date:
+        return 3.0
+    cache_key = (team_id, game_date, year)
+    if cache_key in _bullpen_stress_cache:
+        return _bullpen_stress_cache[cache_key]
+    try:
+        schedule = get_season_schedule(year)
+        recent = sorted(
+            [g for g in schedule
+             if (g.get('home_id') == team_id or g.get('away_id') == team_id)
+             and g.get('game_date', '') < game_date
+             and g.get('status') == 'Final'],
+            key=lambda x: x['game_date'], reverse=True,
+        )[:3]
+        total = 0.0
+        for g in recent:
+            linescore = get_game_linescore(int(g['game_id']), cache_only=cache_only)
+            if not linescore:
+                total += 1.0
+                continue
+            is_home = g.get('home_id') == team_id
+            opp_runs = linescore['away'] if is_home else linescore['home']
+            total += sum(opp_runs[i] for i in range(6, 9) if i < len(opp_runs))
+        result = round(total, 2)
+        _bullpen_stress_cache[cache_key] = result
+        return result
+    except Exception:
+        return 3.0
+
+
+def get_pitcher_handedness(player_name: str) -> str:
+    """Return 'L' or 'R' for the pitcher's throwing hand. Defaults to 'R'."""
+    if not player_name:
+        return 'R'
+    cache_key = player_name.lower().strip()
+    if cache_key in _pitcher_hand_cache:
+        return _pitcher_hand_cache[cache_key]
+    # Load disk cache on first miss
+    if not _pitcher_hand_cache:
+        for k, v in _load_json_cache(_PITCHER_HAND_CACHE_FILE).items():
+            _pitcher_hand_cache[k] = v
+    if cache_key in _pitcher_hand_cache:
+        return _pitcher_hand_cache[cache_key]
+    try:
+        results = statsapi.lookup_player(player_name)
+        if not results:
+            last = player_name.split()[-1] if ' ' in player_name else ''
+            results = statsapi.lookup_player(last) if last else []
+        if not results:
+            _pitcher_hand_cache[cache_key] = 'R'
+            return 'R'
+        player_id = results[0]['id']
+        resp = requests.get(
+            f"https://statsapi.mlb.com/api/v1/people/{player_id}",
+            timeout=10,
+        )
+        resp.raise_for_status()
+        hand = resp.json().get('people', [{}])[0].get('pitchHand', {}).get('code', 'R')
+        _pitcher_hand_cache[cache_key] = hand
+        # Persist to disk
+        disk_data = _load_json_cache(_PITCHER_HAND_CACHE_FILE)
+        disk_data[cache_key] = hand
+        _save_json_cache(_PITCHER_HAND_CACHE_FILE, disk_data)
+        return hand
+    except Exception:
+        _pitcher_hand_cache[cache_key] = 'R'
+        return 'R'
+
+
+def get_team_batting_vs_hand(team_id: int, year: int) -> dict:
+    """Return team OPS vs left-handed and right-handed pitchers."""
+    cache_key = (team_id, year)
+    if cache_key in _team_batting_splits_cache:
+        return _team_batting_splits_cache[cache_key]
+    # Load disk cache on first miss
+    disk_cache_file = Path(str(_TEAM_BATTING_SPLITS_CACHE_FILE).replace('{year}', str(year)))
+    if not _team_batting_splits_cache:
+        for k, v in _load_json_cache(disk_cache_file).items():
+            _team_batting_splits_cache[(int(k), year)] = v
+    if cache_key in _team_batting_splits_cache:
+        return _team_batting_splits_cache[cache_key]
+    defaults = {'vs_lhp': 0.730, 'vs_rhp': 0.730}
+    try:
+        out: dict = {}
+        for hand_key, sit_code in [('vs_lhp', 'vl'), ('vs_rhp', 'vr')]:
+            resp = requests.get(
+                f"https://statsapi.mlb.com/api/v1/teams/{team_id}/stats",
+                params={'stats': 'statSplits', 'group': 'hitting', 'season': year,
+                        'gameType': 'R', 'sitCodes': sit_code},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            for block in resp.json().get('stats', []):
+                for s in block.get('splits', []):
+                    stat = s.get('stat', {})
+                    obp = float(stat.get('obp') or 0)
+                    slg = float(stat.get('slg') or 0)
+                    if obp + slg > 0:
+                        out[hand_key] = round(obp + slg, 3)
+        result = {**defaults, **out}
+        _team_batting_splits_cache[cache_key] = result
+        # Persist to disk
+        all_disk = _load_json_cache(disk_cache_file)
+        all_disk[str(team_id)] = result
+        _save_json_cache(disk_cache_file, all_disk)
+        return result
+    except Exception:
+        _team_batting_splits_cache[cache_key] = defaults
+        return defaults
+
+
 def get_team_roster(team_id: int) -> list[dict]:
     """Return active roster for a team."""
     try:
@@ -99,10 +466,14 @@ def get_team_roster(team_id: int) -> list[dict]:
 
 
 def get_season_schedule(year: int) -> list[dict]:
-    """Fetch all regular season games for a year. Caches to CSV."""
+    """Fetch all regular season games for a year. Memory-cached after first load."""
+    if year in _season_schedule_memory:
+        return _season_schedule_memory[year]
     cache_file = _DATA_DIR / f"schedule_{year}.csv"
     if cache_file.exists():
-        return pd.read_csv(cache_file).to_dict('records')
+        result = pd.read_csv(cache_file).to_dict('records')
+        _season_schedule_memory[year] = result
+        return result
 
     all_games = []
     for month in range(3, 11):
@@ -133,6 +504,7 @@ def get_season_schedule(year: int) -> list[dict]:
 
     df = pd.DataFrame(all_games)
     df.to_csv(cache_file, index=False)
+    _season_schedule_memory[year] = all_games
     return all_games
 
 
@@ -152,11 +524,17 @@ def _load_linescore_cache() -> None:
         pass
 
 
-def get_game_linescore(game_pk: int) -> dict | None:
-    """Fetch per-inning run totals for a completed game, with disk cache."""
+def get_game_linescore(game_pk: int, cache_only: bool = False) -> dict | None:
+    """Fetch per-inning run totals for a completed game, with disk cache.
+
+    Pass cache_only=True to return None rather than making a network call when
+    the game isn't in the disk cache — useful during model training.
+    """
     _load_linescore_cache()
     if game_pk in _linescore_cache:
         return _linescore_cache[game_pk]
+    if cache_only:
+        return None
     try:
         data = statsapi.get('game', {
             'gamePk': game_pk,

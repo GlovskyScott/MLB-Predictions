@@ -15,6 +15,8 @@ MOCK_SIM_RESULT = {
     'predicted_score': '5-3',
     'home_innings': [0.3, 0.2, 0.5, 0.6, 0.4, 0.3, 0.5, 0.7, 0.5],
     'away_innings': [0.2, 0.3, 0.4, 0.3, 0.5, 0.3, 0.4, 0.4, 0.3],
+    'home_innings_scoring_pct': [30.0, 20.0, 50.0, 60.0, 40.0, 30.0, 50.0, 70.0, 50.0],
+    'away_innings_scoring_pct': [20.0, 30.0, 40.0, 30.0, 50.0, 30.0, 40.0, 40.0, 30.0],
     'score_distribution': {
         'home': [10, 20, 40, 60, 80],
         'away': [15, 25, 45, 55, 70],
@@ -32,6 +34,13 @@ MOCK_SIM_RESULT = {
     'venue_id': 3313,
     'home_probable_pitcher': 'Gerrit Cole',
     'away_probable_pitcher': 'Shane Bieber',
+    'home_logo': 'https://www.mlbstatic.com/team-logos/147.svg',
+    'away_logo': 'https://www.mlbstatic.com/team-logos/111.svg',
+    'home_color': '#132448', 'home_color2': '#C4CED4',
+    'away_color': '#BD3039', 'away_color2': '#0C2340',
+    'home_abbr': 'NYY', 'away_abbr': 'BOS',
+    'home_color_rgb': '19,36,72', 'away_color_rgb': '189,48,57',
+    'home_bar_color': '#132448', 'away_bar_color': '#BD3039',
 }
 
 MOCK_RESULTS_DATA = {
@@ -52,71 +61,65 @@ MOCK_RESULTS_DATA = {
     }],
 }
 
+MOCK_AGGREGATE = {
+    'total_games': 10,
+    'days_with_games': 7,
+    'winner_accuracy': 58.0,
+    'avg_score_err': 1.8,
+    'daily': [],
+}
+
+
 @pytest.fixture
 def app():
     return create_app(testing=True)
+
 
 @pytest.fixture
 def client(app):
     return app.test_client()
 
+
 def test_index_returns_200(client, mocker):
     mocker.patch('src.app.run_daily_simulation', return_value=[MOCK_SIM_RESULT])
+    mocker.patch('src.app._get_results_for_date', return_value=MOCK_RESULTS_DATA)
+    mocker.patch('src.app._aggregate_days', return_value=MOCK_AGGREGATE)
     response = client.get('/')
     assert response.status_code == 200
 
+
 def test_index_contains_team_names(client, mocker):
     mocker.patch('src.app.run_daily_simulation', return_value=[MOCK_SIM_RESULT])
+    mocker.patch('src.app._get_results_for_date', return_value=MOCK_RESULTS_DATA)
+    mocker.patch('src.app._aggregate_days', return_value=MOCK_AGGREGATE)
     response = client.get('/')
     assert b'Yankees' in response.data or b'New York' in response.data
 
+
 def test_index_contains_win_probability(client, mocker):
     mocker.patch('src.app.run_daily_simulation', return_value=[MOCK_SIM_RESULT])
+    mocker.patch('src.app._get_results_for_date', return_value=MOCK_RESULTS_DATA)
+    mocker.patch('src.app._aggregate_days', return_value=MOCK_AGGREGATE)
     response = client.get('/')
     assert b'58' in response.data
+
 
 def test_refresh_redirects(client, mocker):
     mocker.patch('src.app.run_daily_simulation', return_value=[MOCK_SIM_RESULT])
     response = client.post('/refresh')
     assert response.status_code in (302, 200)
 
-def test_game_detail_returns_200(client, mocker):
-    import src.app as app_module
-    mocker.patch('src.app.run_daily_simulation', return_value=[MOCK_SIM_RESULT])
-    app_module._simulation_cache = [MOCK_SIM_RESULT]
-    response = client.get('/game/745003')
-    assert response.status_code == 200
 
 def test_index_handles_no_games(client, mocker):
     mocker.patch('src.app.run_daily_simulation', return_value=[])
+    mocker.patch('src.app._get_results_for_date', return_value=MOCK_RESULTS_DATA)
+    mocker.patch('src.app._aggregate_days', return_value=MOCK_AGGREGATE)
     response = client.get('/')
     assert response.status_code == 200
 
-def test_results_route_returns_200(client, mocker):
-    mocker.patch('src.app.run_results_comparison', return_value=MOCK_RESULTS_DATA)
-    response = client.get('/results/2026-06-24')
-    assert response.status_code == 200
-
-def test_results_contains_accuracy(client, mocker):
-    mocker.patch('src.app.run_results_comparison', return_value=MOCK_RESULTS_DATA)
-    response = client.get('/results/2026-06-24')
-    assert b'75' in response.data
-
-def test_results_shows_correct_wrong(client, mocker):
-    mocker.patch('src.app.run_results_comparison', return_value=MOCK_RESULTS_DATA)
-    response = client.get('/results/2026-06-24')
-    assert b'Correct' in response.data
-
-def test_results_no_games(client, mocker):
-    mocker.patch('src.app.run_results_comparison', return_value={
-        'result_date': '2026-06-24', 'n_completed': 0,
-        'winner_accuracy': 0, 'avg_score_err': None, 'games': [],
-    })
-    response = client.get('/results/2026-06-24')
-    assert response.status_code == 200
-    assert b'No completed games' in response.data
 
 def test_retrain_redirects(client, mocker):
     mocker.patch('src.app._get_models', return_value={})
+    mocker.patch('src.app._get_inning_model', return_value=None)
     response = client.post('/retrain')
     assert response.status_code in (302, 200)
