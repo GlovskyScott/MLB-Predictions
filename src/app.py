@@ -1,7 +1,8 @@
 import json
 import threading
+import requests as _requests
 import pandas as pd
-from flask import Flask, render_template, redirect, url_for, request
+from flask import Flask, render_template, redirect, url_for, request, Response, stream_with_context
 from datetime import date, timedelta
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -60,6 +61,7 @@ def _bar_color(primary: str, secondary: str) -> str:
 
 _MODEL_META_FILE = _DATA_DIR / "model_meta.json"
 _RESULTS_CACHE_DIR = _DATA_DIR / "results_cache"
+_EXPLANATIONS_DIR = _DATA_DIR / "explanations"
 _TRAINING_YEARS = [2024, 2025, 2026]
 
 _simulation_cache: list[dict] = []
@@ -235,6 +237,7 @@ def run_daily_simulation(sim_date: str = None, n_simulations: int = 1000) -> lis
                 **sim,
                 'weather': weather,
                 'lineup': lineup,
+                'features': features,
                 'home_pitcher': game.get('home_probable_pitcher', 'TBD'),
                 'away_pitcher': game.get('away_probable_pitcher', 'TBD'),
                 'home_logo': home_meta['logo_url'],
@@ -422,6 +425,143 @@ def _backfill_results_cache(n_days: int = 90) -> None:
         pool.map(_backfill_one, dates)
 
 
+_OLLAMA_URL = "http://localhost:11434/api/generate"
+_OLLAMA_MODEL = "llama3.1:8b"
+_explanation_cache: dict = {}  # game_id → full explanation text
+
+
+def _load_disk_explanations(game_date: str) -> None:
+    """Load any saved explanations for game_date from disk into memory cache."""
+    day_dir = _EXPLANATIONS_DIR / game_date
+    if not day_dir.exists():
+        return
+    for f in day_dir.glob("*.txt"):
+        try:
+            gid = int(f.stem)
+            if gid not in _explanation_cache:
+                _explanation_cache[gid] = f.read_text()
+        except (ValueError, OSError):
+            pass
+
+
+def _save_disk_explanation(game_date: str, game_id: int, text: str) -> None:
+    """Persist one explanation to disk under data/explanations/{date}/{game_id}.txt."""
+    day_dir = _EXPLANATIONS_DIR / game_date
+    day_dir.mkdir(parents=True, exist_ok=True)
+    (day_dir / f"{game_id}.txt").write_text(text)
+
+
+def _build_explain_prompt(game: dict) -> str:
+    f = game.get('features', {})
+    away = game.get('away_name', 'Away')
+    home = game.get('home_name', 'Home')
+    venue = game.get('venue_name', 'the ballpark')
+    away_p = game.get('away_pitcher', 'TBD')
+    home_p = game.get('home_pitcher', 'TBD')
+    away_win = game.get('away_win_pct', 50)
+    home_win = game.get('home_win_pct', 50)
+    modal_away = game.get('modal_away_score', '?')
+    modal_home = game.get('modal_home_score', '?')
+
+    away_hand = 'LHP' if f.get('away_sp_is_lhp', 0) > 0.5 else 'RHP'
+    home_hand = 'LHP' if f.get('home_sp_is_lhp', 0) > 0.5 else 'RHP'
+
+    weather = game.get('weather') or {}
+    is_dome = f.get('is_dome', 0) > 0.5
+    if is_dome:
+        wx = 'indoor dome — weather not a factor'
+    else:
+        wx = f"{weather.get('temperature_f', '?'):.0f}°F, {weather.get('wind_speed_mph', 0):.0f} mph"
+        if f.get('wind_out', 0) > 0.5:
+            wx += ' blowing out (hitter-friendly)'
+        elif f.get('wind_in', 0) > 0.5:
+            wx += ' blowing in (pitcher-friendly)'
+
+    return f"""You are a sharp baseball analyst. Write 2-3 tight paragraphs explaining why the model predicts this outcome. Be specific, cite the numbers, and lead with the most decisive factors. No bullet points. Confident, present-tense analyst voice. Keep it under 200 words.
+
+{away} @ {home} — {venue}
+Win probability: {away} {away_win}% | {home} {home_win}%
+Most likely score: {away} {modal_away} – {home} {modal_home}
+
+Starters:
+  {away}: {away_p} ({away_hand}) ERA {f.get('away_sp_era',0):.2f} FIP {f.get('away_sp_fip',0):.2f} WHIP {f.get('away_sp_whip',0):.2f} — {f.get('away_sp_days_rest',5):.0f}d rest
+  {home}: {home_p} ({home_hand}) ERA {f.get('home_sp_era',0):.2f} FIP {f.get('home_sp_fip',0):.2f} WHIP {f.get('home_sp_whip',0):.2f} — {f.get('home_sp_days_rest',5):.0f}d rest
+
+Offense (wOBA / OPS / R/G last 15):
+  {away}: {f.get('away_team_woba',0):.3f} / {f.get('away_team_ops',0):.3f} / {f.get('away_runs_l15',0):.1f}
+  {home}: {f.get('home_team_woba',0):.3f} / {f.get('home_team_ops',0):.3f} / {f.get('home_runs_l15',0):.1f}
+
+Bullpen (ERA / L3 stress):
+  {away}: {f.get('away_bullpen_era',0):.2f} ERA / {f.get('away_bullpen_stress_l3',0):.1f} stress
+  {home}: {f.get('home_bullpen_era',0):.2f} ERA / {f.get('home_bullpen_stress_l3',0):.1f} stress
+
+Handedness OPS edge:
+  {away} vs {home_hand}: {f.get('away_bat_ops_vs_sp_hand',0):.3f}
+  {home} vs {away_hand}: {f.get('home_bat_ops_vs_sp_hand',0):.3f}
+
+Park runs factor: {f.get('park_runs_factor',1.0):.3f}  Weather: {wx}  Humidity: {f.get('humidity_pct',50):.0f}%
+
+Analysis:"""
+
+
+def _stream_ollama(prompt: str, game_id: int = None, game_date: str = None):
+    """Stream Ollama response as SSE chunks, caching the full text to memory and disk when done."""
+    buf = []
+    try:
+        resp = _requests.post(
+            _OLLAMA_URL,
+            json={'model': _OLLAMA_MODEL, 'prompt': prompt, 'stream': True,
+                  'options': {'num_predict': 350, 'temperature': 0.7}},
+            stream=True,
+            timeout=90,
+        )
+        for raw in resp.iter_lines():
+            if not raw:
+                continue
+            chunk = json.loads(raw)
+            text = chunk.get('response', '')
+            if text:
+                buf.append(text)
+                yield f"data: {json.dumps({'text': text})}\n\n"
+            if chunk.get('done'):
+                if game_id is not None and buf:
+                    full = ''.join(buf)
+                    _explanation_cache[game_id] = full
+                    if game_date:
+                        _save_disk_explanation(game_date, game_id, full)
+                yield "data: [DONE]\n\n"
+                return
+    except Exception as exc:
+        yield f"data: {json.dumps({'error': str(exc)})}\n\n"
+
+
+def _generate_explanation_sync(game: dict) -> str:
+    """Call Ollama synchronously (no streaming). Used by the background pre-generator."""
+    prompt = _build_explain_prompt(game)
+    try:
+        resp = _requests.post(
+            _OLLAMA_URL,
+            json={'model': _OLLAMA_MODEL, 'prompt': prompt, 'stream': False,
+                  'options': {'num_predict': 350, 'temperature': 0.7}},
+            timeout=120,
+        )
+        return resp.json().get('response', '').strip()
+    except Exception:
+        return ''
+
+
+def _pregenerate_explanations(games: list, game_date: str) -> None:
+    """Background: generate and persist explanations for all valid games sequentially."""
+    for game in games:
+        gid = game.get('game_id')
+        if not gid or game.get('error') or gid in _explanation_cache:
+            continue
+        text = _generate_explanation_sync(game)
+        if text:
+            _explanation_cache[gid] = text
+            _save_disk_explanation(game_date, gid, text)
+
+
 def create_app(testing: bool = False) -> Flask:
     app = Flask(__name__, template_folder='../templates', static_folder='../static')
     app.config['TESTING'] = testing
@@ -439,6 +579,8 @@ def create_app(testing: bool = False) -> Flask:
         if not _simulation_cache or _last_simulated_date != today:
             _simulation_cache = run_daily_simulation(today)
             _last_simulated_date = today
+            _load_disk_explanations(today)
+            threading.Thread(target=_pregenerate_explanations, args=(_simulation_cache, today), daemon=True).start()
 
         if not _results_cache or _last_results_date != yesterday:
             try:
@@ -465,6 +607,8 @@ def create_app(testing: bool = False) -> Flask:
         today = date.today().strftime('%Y-%m-%d')
         _simulation_cache = run_daily_simulation(today)
         _last_simulated_date = today
+        _load_disk_explanations(today)
+        threading.Thread(target=_pregenerate_explanations, args=(_simulation_cache, today), daemon=True).start()
         return redirect(url_for('index'))
 
     @app.route('/retrain', methods=['POST'])
@@ -475,6 +619,32 @@ def create_app(testing: bool = False) -> Flask:
         _get_models(force_retrain=True)
         _get_inning_model(force_retrain=True)
         return redirect(url_for('index'))
+
+    @app.route('/explain/<int:game_id>')
+    def explain(game_id: int):
+        game = next((g for g in _simulation_cache if g.get('game_id') == game_id), None)
+        if not game:
+            return Response(
+                f"data: {json.dumps({'error': 'Game not found — try refreshing the page.'})}\n\n",
+                mimetype='text/event-stream',
+            )
+
+        headers = {'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'}
+
+        if game_id in _explanation_cache:
+            cached = _explanation_cache[game_id]
+            def _from_cache():
+                yield f"data: {json.dumps({'text': cached})}\n\n"
+                yield "data: [DONE]\n\n"
+            return Response(stream_with_context(_from_cache()), mimetype='text/event-stream', headers=headers)
+
+        prompt = _build_explain_prompt(game)
+        game_date = game.get('game_date', date.today().strftime('%Y-%m-%d'))
+        return Response(
+            stream_with_context(_stream_ollama(prompt, game_id=game_id, game_date=game_date)),
+            mimetype='text/event-stream',
+            headers=headers,
+        )
 
     return app
 

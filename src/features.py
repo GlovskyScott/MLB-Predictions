@@ -11,7 +11,7 @@ from src.stadiums import get_stadium, classify_wind
 
 _DATA_DIR = Path(__file__).parent.parent / "data"
 
-FEATURE_VERSION = 2  # Increment whenever FEATURE_COLUMNS changes
+FEATURE_VERSION = 3  # Increment whenever FEATURE_COLUMNS changes
 
 # Canonical ordered list of all features fed to XGBoost
 FEATURE_COLUMNS = [
@@ -32,7 +32,7 @@ FEATURE_COLUMNS = [
     # Park factors
     'park_runs_factor', 'park_hr_factor',
     # Weather
-    'temperature_f', 'wind_speed_mph', 'wind_out', 'wind_in', 'precipitation_flag',
+    'temperature_f', 'wind_speed_mph', 'wind_out', 'wind_in', 'precipitation_flag', 'humidity_pct',
     # Context
     'is_dome',
     # Pitcher rest (days since last start)
@@ -176,7 +176,8 @@ INNING_FEATURE_COLUMNS = [
 
 _NEUTRAL_WEATHER = {
     'temperature_f': 72.0, 'wind_speed_mph': 0.0,
-    'wind_direction_deg': 0.0, 'precipitation_mm': 0.0, 'is_dome': False,
+    'wind_direction_deg': 0.0, 'precipitation_mm': 0.0,
+    'humidity_pct': 50.0, 'is_dome': False,
 }
 
 
@@ -328,6 +329,7 @@ def build_game_features(game: dict, year: int = 2026, weather: dict = None,
         'wind_out': 1.0 if wind_label == 'out_to_cf' else 0.0,
         'wind_in': 1.0 if wind_label == 'in_from_cf' else 0.0,
         'precipitation_flag': 1.0 if weather.get('precipitation_mm', 0) > 0.1 else 0.0,
+        'humidity_pct': float(weather.get('humidity_pct', 50.0)),
         'is_dome': 1.0 if is_dome else 0.0,
         'away_sp_days_rest': float(away_days_rest),
         'home_sp_days_rest': float(home_days_rest),
