@@ -11,7 +11,7 @@ from src.stadiums import get_stadium, classify_wind
 
 _DATA_DIR = Path(__file__).parent.parent / "data"
 
-FEATURE_VERSION = 3  # Increment whenever FEATURE_COLUMNS changes
+FEATURE_VERSION = 4  # Increment whenever FEATURE_COLUMNS changes
 
 # Canonical ordered list of all features fed to XGBoost
 FEATURE_COLUMNS = [
@@ -29,8 +29,8 @@ FEATURE_COLUMNS = [
     'away_bullpen_era', 'away_bullpen_whip',
     # Home bullpen
     'home_bullpen_era', 'home_bullpen_whip',
-    # Park factors
-    'park_runs_factor', 'park_hr_factor',
+    # Park factors + elevation (higher altitude = thinner air = more carry)
+    'park_runs_factor', 'park_hr_factor', 'elevation_ft',
     # Weather
     'temperature_f', 'wind_speed_mph', 'wind_out', 'wind_in', 'precipitation_flag', 'humidity_pct',
     # Context
@@ -171,7 +171,7 @@ INNING_FEATURE_COLUMNS = [
     'batting_woba', 'batting_ops', 'batting_runs_l15',
     'pitching_era', 'pitching_whip',
     'sp_days_rest', 'bullpen_stress_l3',
-    'park_runs_factor',
+    'park_runs_factor', 'elevation_ft',
 ]
 
 _NEUTRAL_WEATHER = {
@@ -202,6 +202,7 @@ def build_inning_feature_row(game_feats: dict, inning: int, batting_is_home: boo
         'sp_days_rest': sp_days_rest,
         'bullpen_stress_l3': game_feats.get(f'{opp}_bullpen_stress_l3', 3.0),
         'park_runs_factor': game_feats.get('park_runs_factor', 1.0),
+        'elevation_ft': game_feats.get('elevation_ft', 500.0),
     }
 
 
@@ -223,6 +224,7 @@ def build_game_features(game: dict, year: int = 2026, weather: dict = None,
     is_dome = stadium.get('roof') == 'dome'
     lat = stadium.get('lat', 39.0)
     lon = stadium.get('lon', -95.0)
+    elevation_ft = float(stadium.get('elevation_ft', 500))
 
     if weather is None:
         weather = get_weather_for_game(
@@ -324,6 +326,7 @@ def build_game_features(game: dict, year: int = 2026, weather: dict = None,
         'home_bullpen_whip': home_bp['whip'],
         'park_runs_factor': park['runs_factor'],
         'park_hr_factor': park['hr_factor'],
+        'elevation_ft': elevation_ft,
         'temperature_f': float(weather.get('temperature_f', 72.0)),
         'wind_speed_mph': float(weather.get('wind_speed_mph', 0.0)),
         'wind_out': 1.0 if wind_label == 'out_to_cf' else 0.0,
