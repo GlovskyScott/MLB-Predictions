@@ -9,136 +9,346 @@
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a0a; color: #e8e8e8; }
-        header { background: #1a1a2e; padding: 16px 24px; display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #0064c8; }
-        header h1 { font-size: 22px; color: #fff; }
-        .date-badge { font-size: 13px; color: #aaa; }
-        .refresh-btn { background: #0064c8; color: white; border: none; padding: 8px 18px; border-radius: 6px; cursor: pointer; font-size: 14px; }
-        .refresh-btn:hover { background: #0052a3; }
-        main { max-width: 1200px; margin: 0 auto; padding: 24px 16px; }
-        .no-games { text-align: center; color: #666; padding: 60px; font-size: 18px; }
-        .games-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(520px, 1fr)); gap: 20px; }
-        .game-card { background: #141414; border: 1px solid #2a2a2a; border-radius: 10px; padding: 20px; }
-        .game-card:hover { border-color: #0064c8; }
-        .game-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 14px; }
-        .matchup { font-size: 17px; font-weight: 700; }
-        .venue-info { font-size: 12px; color: #888; margin-top: 4px; }
-        .weather-badge { font-size: 11px; color: #aaa; text-align: right; }
-        .win-prob { margin: 12px 0; }
-        .predicted-score { text-align: center; font-size: 28px; font-weight: 800; letter-spacing: 2px; margin: 12px 0; color: #fff; }
-        .pitchers { display: flex; justify-content: space-between; font-size: 12px; color: #aaa; margin: 8px 0; }
-        .innings-table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 12px; }
-        .innings-table th { background: #222; padding: 5px 8px; color: #888; font-weight: 600; text-align: center; }
-        .innings-table td { padding: 5px 8px; text-align: center; border-top: 1px solid #1e1e1e; }
-        .away-row td { color: #6aade4; }
-        .home-row td { color: #e46a6a; }
-        .chart-container { height: 140px; margin-top: 12px; position: relative; }
-        .detail-link { display: block; text-align: center; margin-top: 12px; color: #0064c8; font-size: 13px; text-decoration: none; }
-        .detail-link:hover { text-decoration: underline; }
-        .error-card { color: #e46a6a; font-size: 13px; }
-        footer { text-align: center; padding: 24px; color: #444; font-size: 12px; }
+
+        header { background: #111; padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #222; }
+        .date-badge { font-size: 11px; color: #666; margin-top: 1px; }
+        .header-actions { display: flex; gap: 8px; align-items: center; }
+        .btn { border: none; padding: 6px 12px; border-radius: 5px; cursor: pointer; font-size: 12px; font-weight: 600; }
+        .btn-primary { background: #1a6fd4; color: white; }
+        .btn-secondary { background: #2a2a2a; color: #ccc; }
+
+        /* ── Two-column layout ── */
+        .dashboard { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; max-width: 1500px; margin: 0 auto; padding: 16px; align-items: start; }
+        .col-header { font-size: 11px; font-weight: 700; color: #555; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid #1e1e1e; }
+
+        /* ── Game cards ── */
+        .game-card { background: #141414; border: 1px solid #222; border-radius: 10px; overflow: hidden; margin-bottom: 12px; }
+        .card-matchup { display: flex; align-items: center; padding: 10px 12px; min-height: 58px; }
+        .team-side { flex: 1; display: flex; align-items: center; gap: 8px; }
+        .team-side.home { flex-direction: row-reverse; }
+        .team-logo { width: 36px; height: 36px; object-fit: contain; flex-shrink: 0; }
+        .team-info { display: flex; flex-direction: column; gap: 3px; }
+        .team-side.home .team-info { align-items: flex-end; }
+        .team-abbr { font-weight: 900; font-size: 12px; color: #fff; line-height: 1.2; }
+        .team-role { font-size: 10px; color: #555; }
+        .score-center { text-align: center; padding: 0 10px; flex-shrink: 0; }
+        .score-nums { font-size: 22px; font-weight: 900; letter-spacing: 2px; color: #fff; }
+        .score-label { font-size: 9px; color: #444; margin-top: 1px; }
+        .card-prob { padding: 0 12px 8px; }
+        .card-detail { border-top: 1px solid #1e1e1e; padding: 10px 12px; }
+        .detail-meta { display: flex; justify-content: space-between; font-size: 10px; color: #666; margin-bottom: 8px; gap: 4px; flex-wrap: wrap; }
+        .chart-container { height: 220px; position: relative; margin-bottom: 6px; }
+        .subsection-label { font-size: 9px; font-weight: 700; color: #444; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 6px; }
+
+        /* Innings table */
+        .inn-table { width: 100%; border-collapse: collapse; font-size: 11px; margin: 6px 0 12px; }
+        .inn-table th { text-align: center; padding: 4px 2px; color: #444; font-weight: 700; font-size: 10px; border: 1px solid #1e1e1e; background: #0e0e0e; }
+        .inn-table td { text-align: center; padding: 5px 3px; border: 1px solid #1e1e1e; vertical-align: middle; }
+        .inn-table .inn-lbl-cell { text-align: left; font-weight: 700; font-size: 10px; padding: 4px 8px; white-space: nowrap; border: 1px solid #1e1e1e; background: #0e0e0e; cursor: default; }
+        .inn-score-pct { font-size: 11px; font-weight: 700; line-height: 1.3; }
+        .inn-score-avg { font-size: 9px; color: #555; }
+
+        /* ── Results panels ── */
+        .results-panel { background: #141414; border: 1px solid #222; border-radius: 10px; overflow: hidden; margin-bottom: 14px; }
+        .panel-header { display: flex; align-items: center; gap: 20px; padding: 10px 14px; background: #1a1a1a; border-bottom: 1px solid #222; flex-wrap: wrap; }
+        .panel-title { font-size: 11px; font-weight: 700; color: #555; text-transform: uppercase; letter-spacing: 1px; }
+        .summary-stat { text-align: center; }
+        .summary-stat .s-label { font-size: 10px; color: #555; text-transform: uppercase; }
+        .summary-stat .s-value { font-size: 20px; font-weight: 800; }
+        .s-value.good { color: #4caf50; }
+        .s-value.neutral { color: #e8e8e8; }
+
+        /* Yesterday game table */
+        .results-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+        .results-table thead th { background: #1a1a1a; padding: 6px 10px; color: #555; text-align: left; white-space: nowrap; border-bottom: 1px solid #222; }
+        .results-table tbody td { padding: 7px 10px; border-top: 1px solid #1a1a1a; vertical-align: middle; }
+        .r-team { display: flex; align-items: center; gap: 5px; }
+        .r-logo { width: 20px; height: 20px; object-fit: contain; }
+        .r-name { font-weight: 700; font-size: 12px; color: #fff; }
+        .actual-score { font-size: 14px; font-weight: 800; }
+        .sub-text { font-size: 10px; color: #555; margin-top: 1px; }
+        .badge { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 10px; font-weight: 700; }
+        .badge.correct { background: #1b4d2e; color: #4caf50; }
+        .badge.wrong { background: #4d1b1b; color: #ef5350; }
+        .err-low { color: #4caf50; font-size: 11px; }
+        .err-mid { color: #ffb300; font-size: 11px; }
+        .err-high { color: #ef5350; font-size: 11px; }
+
+        /* 7-day / 30-day daily breakdown table */
+        .daily-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+        .daily-table thead th { background: #1a1a1a; padding: 6px 10px; color: #555; text-align: left; border-bottom: 1px solid #222; }
+        .daily-table tbody td { padding: 6px 10px; border-top: 1px solid #1a1a1a; }
+        .daily-table .acc-bar-cell { width: 80px; }
+        .acc-bar { height: 6px; border-radius: 3px; background: #222; overflow: hidden; margin-top: 2px; }
+        .acc-bar-fill { height: 100%; border-radius: 3px; }
+
+        .no-games { text-align: center; color: #555; padding: 40px; font-size: 14px; }
+        footer { text-align: center; padding: 20px; color: #333; font-size: 11px; }
+
+        @media (max-width: 900px) { .dashboard { grid-template-columns: 1fr; } }
     </style>
 </head>
 <body>
+
 <header>
     <div>
-        <h1>⚾ MLB Simulator</h1>
-        <div class="date-badge">{{ sim_date }} · {{ results|length }} game(s)</div>
+        <div style="font-size:17px;font-weight:700;">MLB Simulator</div>
+        <div class="date-badge">{{ sim_date }}</div>
     </div>
-    <form action="/refresh" method="post">
-        <button class="refresh-btn" type="submit">↻ Refresh</button>
-    </form>
+    <div class="header-actions">
+        <form action="/refresh" method="post" style="display:inline">
+            <button class="btn btn-primary" type="submit">↻ Refresh</button>
+        </form>
+        <form action="/retrain" method="post" style="display:inline">
+            <button class="btn btn-secondary" type="submit">⚙ Retrain</button>
+        </form>
+    </div>
 </header>
-<main>
+
+<div class="dashboard">
+
+<!-- ══════════════ LEFT: TODAY ══════════════ -->
+<div>
+    <div class="col-header">Today's Predictions &middot; {{ results|length }} game(s)</div>
+
     {% if not results %}
     <div class="no-games">No games scheduled for {{ sim_date }}.</div>
     {% else %}
-    <div class="games-grid">
-        {% for r in results %}
-        <div class="game-card">
-            {% if r.get('error') %}
-            <div class="matchup">{{ r.away_name }} @ {{ r.home_name }}</div>
-            <div class="error-card">Simulation error: {{ r.error }}</div>
-            {% else %}
-            <div class="game-header">
-                <div>
-                    <div class="matchup">{{ r.away_name }} @ {{ r.home_name }}</div>
-                    <div class="venue-info">{{ r.venue_name }} · {{ r.game_datetime[11:16] if r.game_datetime else '' }} UTC</div>
+
+    {% for r in results %}
+    {% if not r.get('error') %}
+    <script>
+    window['cdata_{{ r.game_id }}'] = {
+        home: {{ r.score_distribution.home | tojson }}, away: {{ r.score_distribution.away | tojson }},
+        labels: {{ r.score_distribution.labels | tojson }},
+        homeName: {{ r.home_name | tojson }}, awayName: {{ r.away_name | tojson }},
+        homeColor: {{ r.home_color | tojson }}, awayColor: {{ r.away_color | tojson }},
+        nSims: {{ r.n_simulations }},
+    };
+    </script>
+    {% endif %}
+
+    <div class="game-card">
+    {% if r.get('error') %}
+        <div style="padding:12px;color:#e46a6a;font-size:12px;">{{ r.away_name }} @ {{ r.home_name }}<br><small>{{ r.error }}</small></div>
+    {% else %}
+        <div class="card-matchup"
+             style="background:linear-gradient(135deg,{{ r.away_color }}20 0%,#141414 38%,#141414 62%,{{ r.home_color }}20 100%);">
+            <div class="team-side away">
+                <img class="team-logo" src="{{ r.away_logo }}" alt="{{ r.away_name }}" loading="lazy">
+                <div class="team-info">
+                    <span class="team-abbr">{{ r.away_name }}</span>
+                    <span class="team-role">Away</span>
                 </div>
-                <div class="weather-badge">
-                    {% if r.weather %}
-                        {% if r.weather.is_dome %}
-                        🏟️ Dome
-                        {% else %}
-                        🌡️ {{ r.weather.temperature_f|round|int }}°F
-                        💨 {{ r.weather.wind_speed_mph|round|int }} mph
-                        {% endif %}
-                    {% endif %}
+            </div>
+            <div class="score-center">
+                <div class="score-nums" title="Most common final score across {{ r.n_simulations }} simulations">{{ r.modal_away_score }}&nbsp;—&nbsp;{{ r.modal_home_score }}</div>
+                <div class="score-label">predicted</div>
+            </div>
+            <div class="team-side home">
+                <img class="team-logo" src="{{ r.home_logo }}" alt="{{ r.home_name }}" loading="lazy">
+                <div class="team-info">
+                    <span class="team-abbr">{{ r.home_name }}</span>
+                    <span class="team-role">Home</span>
                 </div>
             </div>
+        </div>
 
-            <div class="pitchers">
-                <span>🔵 SP: {{ r.away_pitcher }}</span>
-                <span>SP: {{ r.home_pitcher }} 🔴</span>
+        <div class="card-prob" id="prob-{{ r.game_id }}"></div>
+        <script>
+        renderWinProbBar('prob-{{ r.game_id }}',
+            {{ r.home_win_pct }}, {{ r.away_win_pct }},
+            {{ r.home_name | tojson }}, {{ r.away_name | tojson }},
+            {{ r.away_color | tojson }}, {{ r.home_color | tojson }});
+        </script>
+
+        <div class="card-detail">
+            <div class="detail-meta">
+                <span title="Away starting pitcher">SP: <strong>{{ r.away_pitcher }}</strong></span>
+                <span>{% if r.weather %}{% if r.weather.is_dome %}Dome · {{ r.venue_name }}{% else %}{{ r.weather.temperature_f|round|int }}°F · {{ r.weather.wind_speed_mph|round|int }} mph · {{ r.venue_name }}{% endif %}{% else %}{{ r.venue_name }}{% endif %}</span>
+                <span title="Home starting pitcher">SP: <strong>{{ r.home_pitcher }}</strong></span>
             </div>
 
-            <div class="win-prob" id="prob-{{ r.game_id }}"></div>
-            <script>
-                renderWinProbBar(
-                    'prob-{{ r.game_id }}',
-                    {{ r.home_win_pct }}, {{ r.away_win_pct }},
-                    {{ r.home_name.split()[-1] | tojson }}, {{ r.away_name.split()[-1] | tojson }}
-                );
-            </script>
-
-            <div class="predicted-score">
-                {{ r.away_name.split()[-1] }} {{ r.median_away_score|round|int }}
-                &nbsp;—&nbsp;
-                {{ r.median_home_score|round|int }} {{ r.home_name.split()[-1] }}
-            </div>
-
-            <table class="innings-table">
+            <div class="subsection-label">Inning Breakdown — Scoring % &amp; Avg Runs</div>
+            <table class="inn-table">
                 <thead>
                     <tr>
-                        <th>Team</th>
-                        {% for i in range(1, 10) %}<th>{{ i }}</th>{% endfor %}
-                        <th>R</th>
+                        <th></th>
+                        {% for n in range(1,10) %}<th>{{ n }}</th>{% endfor %}
                     </tr>
                 </thead>
                 <tbody>
-                    <tr class="away-row">
-                        <td>{{ r.away_name.split()[-1] }}</td>
-                        {% for v in r.away_innings %}<td>{{ v|round(1) }}</td>{% endfor %}
-                        <td><strong>{{ r.median_away_score|round|int }}</strong></td>
+                    <tr>
+                        <td class="inn-lbl-cell" style="color:{{ r.away_bar_color }};" title="{{ r.away_name }}">Away</td>
+                        {% for i in range(9) %}
+                        {% set avg = r.away_innings[i] %}{% set pct = r.away_innings_scoring_pct[i] %}
+                        <td>
+                            <div class="inn-score-pct" style="color:{{ r.away_bar_color }};">{{ pct }}%</div>
+                            <div class="inn-score-avg">{{ "%.1f"|format(avg) }}</div>
+                        </td>
+                        {% endfor %}
                     </tr>
-                    <tr class="home-row">
-                        <td>{{ r.home_name.split()[-1] }}</td>
-                        {% for v in r.home_innings %}<td>{{ v|round(1) }}</td>{% endfor %}
-                        <td><strong>{{ r.median_home_score|round|int }}</strong></td>
+                    <tr>
+                        <td class="inn-lbl-cell" style="color:{{ r.home_bar_color }};" title="{{ r.home_name }}">Home</td>
+                        {% for i in range(9) %}
+                        {% set avg = r.home_innings[i] %}{% set pct = r.home_innings_scoring_pct[i] %}
+                        <td>
+                            <div class="inn-score-pct" style="color:{{ r.home_bar_color }};">{{ pct }}%</div>
+                            <div class="inn-score-avg">{{ "%.1f"|format(avg) }}</div>
+                        </td>
+                        {% endfor %}
+                    </tr>
+                    <tr>
+                        <td class="inn-lbl-cell" style="color:#555;" title="Probability at least one team scores this inning">Either</td>
+                        {% for i in range(9) %}
+                        {% set pa = r.away_innings_scoring_pct[i] %}{% set ph = r.home_innings_scoring_pct[i] %}
+                        {% set e = ((1 - (1 - pa/100) * (1 - ph/100)) * 100) | round | int %}
+                        <td><div class="inn-score-pct" style="color:#666;">{{ e }}%</div></td>
+                        {% endfor %}
                     </tr>
                 </tbody>
             </table>
 
-            <div class="chart-container">
-                <canvas id="chart-{{ r.game_id }}"></canvas>
-            </div>
-            <script>
-                renderDistributionChart(
-                    'chart-{{ r.game_id }}',
-                    {{ r.score_distribution.home | tojson }},
-                    {{ r.score_distribution.away | tojson }},
-                    {{ r.score_distribution.labels | tojson }},
-                    {{ r.home_name.split()[-1] | tojson }},
-                    {{ r.away_name.split()[-1] | tojson }}
-                );
-            </script>
+            <div class="subsection-label" style="margin-top:10px;">Score Probability — Likelihood of Each Final Run Total Across Simulations</div>
+            <div class="chart-container"><canvas id="chart-{{ r.game_id }}"></canvas></div>
+        </div>
+    {% endif %}
+    </div>
+    {% endfor %}
+    {% endif %}
+</div><!-- /left -->
 
-            <a class="detail-link" href="/game/{{ r.game_id }}">View full detail →</a>
+<!-- ══════════════ RIGHT: RESULTS ══════════════ -->
+<div>
+    <div class="col-header">Historical Results</div>
+
+    {# ── Yesterday ── #}
+    <div class="results-panel">
+        <div class="panel-header">
+            <span class="panel-title">Yesterday &middot; {{ yesterday_date }}</span>
+            {% if yesterday and yesterday.get('n_completed', 0) > 0 %}
+            <div class="summary-stat"><div class="s-label">Games</div><div class="s-value neutral">{{ yesterday.n_completed }}</div></div>
+            <div class="summary-stat"><div class="s-label" title="% of games where predicted winner was correct">Accuracy</div><div class="s-value {% if yesterday.winner_accuracy >= 60 %}good{% else %}neutral{% endif %}">{{ yesterday.winner_accuracy }}%</div></div>
+            {% if yesterday.avg_score_err is not none %}
+            <div class="summary-stat"><div class="s-label" title="Average runs prediction error per team">Avg Err</div><div class="s-value {% if yesterday.avg_score_err <= 1.5 %}good{% else %}neutral{% endif %}">±{{ "%.1f"|format(yesterday.avg_score_err) }}</div></div>
+            {% endif %}
             {% endif %}
         </div>
-        {% endfor %}
+        {% if yesterday and yesterday.get('n_completed', 0) > 0 %}
+        <table class="results-table">
+            <thead><tr><th>Away</th><th>Home</th><th>Actual</th><th title="Most common predicted final score">Pred</th><th></th><th title="Average score error vs actual result">Err</th></tr></thead>
+            <tbody>
+            {% for g in yesterday.games %}
+                {% if g.get('error') %}
+                <tr><td colspan="6" style="color:#444;font-size:10px;padding:7px 10px;font-style:italic;">{{ g.away_name }} @ {{ g.home_name }} — error</td></tr>
+                {% else %}
+                <tr>
+                    <td><div class="r-team"><img class="r-logo" src="{{ g.away_logo }}" alt=""><span class="r-name">{{ g.away_name }}</span></div></td>
+                    <td><div class="r-team"><img class="r-logo" src="{{ g.home_logo }}" alt=""><span class="r-name">{{ g.home_name }}</span></div></td>
+                    <td>
+                        <div class="actual-score">{{ g.actual_away_score }}–{{ g.actual_home_score }}</div>
+                        <div class="sub-text">{% if g.actual_home_won %}{{ g.home_name }} W{% else %}{{ g.away_name }} W{% endif %}</div>
+                    </td>
+                    <td>
+                        <div style="font-size:12px;font-weight:700;" title="Most common simulated final score">{{ g.modal_away_score | default(g.median_away_score | round | int) }}–{{ g.modal_home_score | default(g.median_home_score | round | int) }}</div>
+                        <div class="sub-text" title="Home team win probability">{{ g.home_win_pct }}% home win</div>
+                    </td>
+                    <td>{% if g.winner_correct %}<span class="badge correct">✓</span>{% else %}<span class="badge wrong">✗</span>{% endif %}</td>
+                    <td>{% set err = (g.home_score_err + g.away_score_err) / 2 %}<span class="{% if err <= 1.0 %}err-low{% elif err <= 2.5 %}err-mid{% else %}err-high{% endif %}">±{{ "%.1f"|format(err) }}</span></td>
+                </tr>
+                {% endif %}
+            {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div class="no-games" style="padding:20px;">No completed games found.</div>
+        {% endif %}
     </div>
-    {% endif %}
-</main>
-<footer>MLB Simulator v1.0 · Powered by XGBoost + Monte Carlo · Data: MLB Stats API, pybaseball, Open-Meteo</footer>
+
+    {# ── Last 7 Days ── #}
+    <div class="results-panel">
+        <div class="panel-header">
+            <span class="panel-title">Last 7 Days</span>
+            {% if last_7 and last_7.total_games > 0 %}
+            <div class="summary-stat"><div class="s-label">Games</div><div class="s-value neutral">{{ last_7.total_games }}</div></div>
+            <div class="summary-stat"><div class="s-label" title="% of games where predicted winner was correct">Accuracy</div><div class="s-value {% if last_7.winner_accuracy >= 60 %}good{% else %}neutral{% endif %}">{{ last_7.winner_accuracy }}%</div></div>
+            {% if last_7.avg_score_err is not none %}
+            <div class="summary-stat"><div class="s-label" title="Average runs prediction error per team">Avg Err</div><div class="s-value {% if last_7.avg_score_err <= 1.5 %}good{% else %}neutral{% endif %}">±{{ "%.1f"|format(last_7.avg_score_err) }}</div></div>
+            {% endif %}
+            <div class="summary-stat"><div class="s-label">Days</div><div class="s-value neutral">{{ last_7.days_with_games }}/7</div></div>
+            {% endif %}
+        </div>
+        {% if last_7 and last_7.daily %}
+        <table class="daily-table">
+            <thead><tr><th>Date</th><th>Games</th><th>Accuracy</th><th>Avg Err</th></tr></thead>
+            <tbody>
+            {% for day in last_7.daily %}
+            <tr>
+                <td style="color:#aaa;">{{ day.result_date }}</td>
+                <td>{{ day.n_completed }}</td>
+                <td>
+                    <span style="font-weight:700;color:{% if day.winner_accuracy >= 60 %}#4caf50{% else %}#e8e8e8{% endif %};">{{ day.winner_accuracy }}%</span>
+                    <div class="acc-bar"><div class="acc-bar-fill" style="width:{{ day.winner_accuracy }}%;background:{% if day.winner_accuracy >= 60 %}#4caf50{% else %}#666{% endif %};"></div></div>
+                </td>
+                <td>{% if day.avg_score_err is not none %}<span class="{% if day.avg_score_err <= 1.5 %}err-low{% elif day.avg_score_err <= 2.5 %}err-mid{% else %}err-high{% endif %}">±{{ "%.1f"|format(day.avg_score_err) }}</span>{% else %}—{% endif %}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div class="no-games" style="padding:20px;">No cached data yet — loads automatically over time.</div>
+        {% endif %}
+    </div>
+
+    {# ── Last 30 Days ── #}
+    <div class="results-panel">
+        <div class="panel-header">
+            <span class="panel-title">Last 30 Days</span>
+            {% if last_30 and last_30.total_games > 0 %}
+            <div class="summary-stat"><div class="s-label">Games</div><div class="s-value neutral">{{ last_30.total_games }}</div></div>
+            <div class="summary-stat"><div class="s-label" title="% of games where predicted winner was correct">Accuracy</div><div class="s-value {% if last_30.winner_accuracy >= 60 %}good{% else %}neutral{% endif %}">{{ last_30.winner_accuracy }}%</div></div>
+            {% if last_30.avg_score_err is not none %}
+            <div class="summary-stat"><div class="s-label" title="Average runs prediction error per team">Avg Err</div><div class="s-value {% if last_30.avg_score_err <= 1.5 %}good{% else %}neutral{% endif %}">±{{ "%.1f"|format(last_30.avg_score_err) }}</div></div>
+            {% endif %}
+            <div class="summary-stat"><div class="s-label">Days</div><div class="s-value neutral">{{ last_30.days_with_games }}/30</div></div>
+            {% endif %}
+        </div>
+        {% if last_30 and last_30.daily %}
+        <table class="daily-table">
+            <thead><tr><th>Date</th><th>Games</th><th>Accuracy</th><th>Avg Err</th></tr></thead>
+            <tbody>
+            {% for day in last_30.daily %}
+            <tr>
+                <td style="color:#aaa;">{{ day.result_date }}</td>
+                <td>{{ day.n_completed }}</td>
+                <td>
+                    <span style="font-weight:700;color:{% if day.winner_accuracy >= 60 %}#4caf50{% else %}#e8e8e8{% endif %};">{{ day.winner_accuracy }}%</span>
+                    <div class="acc-bar"><div class="acc-bar-fill" style="width:{{ day.winner_accuracy }}%;background:{% if day.winner_accuracy >= 60 %}#4caf50{% else %}#666{% endif %};"></div></div>
+                </td>
+                <td>{% if day.avg_score_err is not none %}<span class="{% if day.avg_score_err <= 1.5 %}err-low{% elif day.avg_score_err <= 2.5 %}err-mid{% else %}err-high{% endif %}">±{{ "%.1f"|format(day.avg_score_err) }}</span>{% else %}—{% endif %}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div class="no-games" style="padding:20px;">No cached data yet — loads automatically over time.</div>
+        {% endif %}
+    </div>
+
+</div><!-- /right -->
+</div><!-- /dashboard -->
+
+<footer>MLB Simulator v1.0 &middot; XGBoost + Monte Carlo &middot; MLB Stats API · pybaseball · Open-Meteo</footer>
+
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    document.querySelectorAll('[id^="chart-"]').forEach(function (canvas) {
+        const gameId = canvas.id.replace('chart-', '');
+        const d = window['cdata_' + gameId];
+        if (d) renderScoreDistribution(canvas.id,
+            d.home, d.away, d.labels, d.homeName, d.awayName, d.homeColor, d.awayColor, d.nSims);
+    });
+});
+</script>
 </body>
 </html>

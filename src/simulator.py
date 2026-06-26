@@ -64,11 +64,18 @@ def simulate_game(prediction: dict, n_simulations: int = 1000, seed: int = None)
         home_innings_matrix[i] = home_by_inning
         away_innings_matrix[i] = away_by_inning
 
-    home_innings_median = [float(np.median(home_innings_matrix[:, j])) for j in range(9)]
-    away_innings_median = [float(np.median(away_innings_matrix[:, j])) for j in range(9)]
+    # Mean per inning so values sum to predicted total; medians of Poisson(λ<0.5) are always 0
+    home_innings_mean = [round(float(np.mean(home_innings_matrix[:, j])), 2) for j in range(9)]
+    away_innings_mean = [round(float(np.mean(away_innings_matrix[:, j])), 2) for j in range(9)]
+    home_innings_scoring_pct = [round(float(np.mean(home_innings_matrix[:, j] >= 1)) * 100, 1) for j in range(9)]
+    away_innings_scoring_pct = [round(float(np.mean(away_innings_matrix[:, j] >= 1)) * 100, 1) for j in range(9)]
 
     median_home = float(np.median(home_scores_all))
     median_away = float(np.median(away_scores_all))
+
+    # Most common actual game outcome — never ties since extra innings resolves them
+    score_pairs = Counter(zip(away_scores_all, home_scores_all))
+    modal_away, modal_home = score_pairs.most_common(1)[0][0]
 
     home_dist = Counter(home_scores_all)
     away_dist = Counter(away_scores_all)
@@ -81,8 +88,12 @@ def simulate_game(prediction: dict, n_simulations: int = 1000, seed: int = None)
         'away_win_pct': round((away_wins / n_simulations) * 100, 1),
         'median_home_score': round(median_home, 1),
         'median_away_score': round(median_away, 1),
-        'home_innings': home_innings_median,
-        'away_innings': away_innings_median,
+        'modal_home_score': modal_home,
+        'modal_away_score': modal_away,
+        'home_innings': home_innings_mean,
+        'away_innings': away_innings_mean,
+        'home_innings_scoring_pct': home_innings_scoring_pct,
+        'away_innings_scoring_pct': away_innings_scoring_pct,
         'score_distribution': {
             'home': home_hist,
             'away': away_hist,
