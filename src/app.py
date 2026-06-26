@@ -499,7 +499,7 @@ Handedness OPS edge:
   {away} vs {home_hand}: {f.get('away_bat_ops_vs_sp_hand',0):.3f}
   {home} vs {away_hand}: {f.get('home_bat_ops_vs_sp_hand',0):.3f}
 
-Park runs factor: {f.get('park_runs_factor',1.0):.3f}  Weather: {wx}
+Park runs factor: {f.get('park_runs_factor',1.0):.3f}  Weather: {wx}  Humidity: {f.get('humidity_pct',50):.0f}%
 
 Analysis:"""
 

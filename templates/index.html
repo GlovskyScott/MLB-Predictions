@@ -192,7 +192,7 @@
         <div class="card-detail">
             <div class="detail-meta">
                 <span title="Away starting pitcher">SP: <strong>{{ r.away_pitcher }}</strong></span>
-                <span>{% if r.weather %}{% if r.weather.is_dome %}Dome · {{ r.venue_name }}{% else %}{{ r.weather.temperature_f|round|int }}°F · {{ r.weather.wind_speed_mph|round|int }} mph · {{ r.venue_name }}{% endif %}{% else %}{{ r.venue_name }}{% endif %}</span>
+                <span>{% if r.weather %}{% if r.weather.is_dome %}Dome · {{ r.venue_name }}{% else %}{{ r.weather.temperature_f|round|int }}°F · {{ r.weather.wind_speed_mph|round|int }} mph · {{ r.weather.humidity_pct|default(50)|round|int }}% RH · {{ r.venue_name }}{% endif %}{% else %}{{ r.venue_name }}{% endif %}</span>
                 <span title="Home starting pitcher">SP: <strong>{{ r.home_pitcher }}</strong></span>
             </div>
 

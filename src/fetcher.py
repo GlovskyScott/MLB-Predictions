@@ -111,14 +111,20 @@ def _load_weather_cache() -> None:
         return
     df = pd.read_csv(_WEATHER_CACHE_FILE)
     for _, row in df.iterrows():
+        # Skip entries missing humidity — they were cached before this field was added;
+        # they will be re-fetched and saved with humidity on next access.
+        if 'humidity_pct' not in df.columns or pd.isna(row.get('humidity_pct')):
+            continue
         key = (str(row['date']), round(float(row['lat']), 2), round(float(row['lon']), 2))
         _weather_cache[key] = {
             'temperature_f': float(row['temperature_f']),
             'wind_speed_mph': float(row['wind_speed_mph']),
             'wind_direction_deg': float(row['wind_direction_deg']),
             'precipitation_mm': float(row['precipitation_mm']),
+            'humidity_pct': float(row['humidity_pct']),
             'is_dome': False,
         }
+
 
 def _save_weather_cache_entry(date: str, lat: float, lon: float, weather: dict) -> None:
     row = pd.DataFrame([{
@@ -127,6 +133,7 @@ def _save_weather_cache_entry(date: str, lat: float, lon: float, weather: dict) 
         'wind_speed_mph': weather['wind_speed_mph'],
         'wind_direction_deg': weather['wind_direction_deg'],
         'precipitation_mm': weather['precipitation_mm'],
+        'humidity_pct': weather.get('humidity_pct', 50.0),
     }])
     row.to_csv(_WEATHER_CACHE_FILE, mode='a', header=not _WEATHER_CACHE_FILE.exists(), index=False)
 
@@ -694,7 +701,7 @@ def get_weather_forecast(lat: float, lon: float, game_datetime: str) -> dict:
     params = {
         'latitude': lat,
         'longitude': lon,
-        'hourly': 'temperature_2m,windspeed_10m,winddirection_10m,precipitation',
+        'hourly': 'temperature_2m,windspeed_10m,winddirection_10m,precipitation,relative_humidity_2m',
         'temperature_unit': 'fahrenheit',
         'windspeed_unit': 'mph',
         'start_date': game_date,
@@ -710,6 +717,7 @@ def get_weather_forecast(lat: float, lon: float, game_datetime: str) -> dict:
     wind_s = hourly.get('windspeed_10m', [0.0])
     wind_d = hourly.get('winddirection_10m', [0.0])
     precip = hourly.get('precipitation', [0.0])
+    humidity = hourly.get('relative_humidity_2m', [50.0])
     idx = min(game_hour, len(temp) - 1) if temp else 0
 
     return {
@@ -717,6 +725,7 @@ def get_weather_forecast(lat: float, lon: float, game_datetime: str) -> dict:
         'wind_speed_mph': float(wind_s[idx]) if wind_s else 0.0,
         'wind_direction_deg': float(wind_d[idx]) if wind_d else 0.0,
         'precipitation_mm': float(precip[idx]) if precip else 0.0,
+        'humidity_pct': float(humidity[idx]) if humidity else 50.0,
         'is_dome': False,
     }
 
@@ -726,7 +735,7 @@ def get_weather_historical(lat: float, lon: float, game_date: str, game_hour: in
     params = {
         'latitude': lat,
         'longitude': lon,
-        'hourly': 'temperature_2m,windspeed_10m,winddirection_10m,precipitation',
+        'hourly': 'temperature_2m,windspeed_10m,winddirection_10m,precipitation,relative_humidity_2m',
         'temperature_unit': 'fahrenheit',
         'windspeed_unit': 'mph',
         'start_date': game_date,
@@ -742,6 +751,7 @@ def get_weather_historical(lat: float, lon: float, game_date: str, game_hour: in
     wind_s = hourly.get('windspeed_10m', [0.0])
     wind_d = hourly.get('winddirection_10m', [0.0])
     precip = hourly.get('precipitation', [0.0])
+    humidity = hourly.get('relative_humidity_2m', [50.0])
     idx = min(game_hour, len(temp) - 1) if temp else 0
 
     return {
@@ -749,6 +759,7 @@ def get_weather_historical(lat: float, lon: float, game_date: str, game_hour: in
         'wind_speed_mph': float(wind_s[idx]) if wind_s else 0.0,
         'wind_direction_deg': float(wind_d[idx]) if wind_d else 0.0,
         'precipitation_mm': float(precip[idx]) if precip else 0.0,
+        'humidity_pct': float(humidity[idx]) if humidity else 50.0,
         'is_dome': False,
     }
 
@@ -761,6 +772,7 @@ def get_weather_for_game(lat: float, lon: float, game_datetime: str, is_dome: bo
             'wind_speed_mph': 0.0,
             'wind_direction_deg': 0.0,
             'precipitation_mm': 0.0,
+            'humidity_pct': 50.0,
             'is_dome': True,
         }
     game_date = game_datetime[:10] if game_datetime else ''
@@ -790,5 +802,6 @@ def get_weather_for_game(lat: float, lon: float, game_datetime: str, is_dome: bo
             'wind_speed_mph': 0.0,
             'wind_direction_deg': 0.0,
             'precipitation_mm': 0.0,
+            'humidity_pct': 50.0,
             'is_dome': False,
         }
