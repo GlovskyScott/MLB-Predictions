@@ -61,6 +61,7 @@ def _bar_color(primary: str, secondary: str) -> str:
 
 _MODEL_META_FILE = _DATA_DIR / "model_meta.json"
 _RESULTS_CACHE_DIR = _DATA_DIR / "results_cache"
+_EXPLANATIONS_DIR = _DATA_DIR / "explanations"
 _TRAINING_YEARS = [2024, 2025, 2026]
 
 _simulation_cache: list[dict] = []
@@ -429,6 +430,27 @@ _OLLAMA_MODEL = "llama3.1:8b"
 _explanation_cache: dict = {}  # game_id → full explanation text
 
 
+def _load_disk_explanations(game_date: str) -> None:
+    """Load any saved explanations for game_date from disk into memory cache."""
+    day_dir = _EXPLANATIONS_DIR / game_date
+    if not day_dir.exists():
+        return
+    for f in day_dir.glob("*.txt"):
+        try:
+            gid = int(f.stem)
+            if gid not in _explanation_cache:
+                _explanation_cache[gid] = f.read_text()
+        except (ValueError, OSError):
+            pass
+
+
+def _save_disk_explanation(game_date: str, game_id: int, text: str) -> None:
+    """Persist one explanation to disk under data/explanations/{date}/{game_id}.txt."""
+    day_dir = _EXPLANATIONS_DIR / game_date
+    day_dir.mkdir(parents=True, exist_ok=True)
+    (day_dir / f"{game_id}.txt").write_text(text)
+
+
 def _build_explain_prompt(game: dict) -> str:
     f = game.get('features', {})
     away = game.get('away_name', 'Away')
@@ -482,8 +504,8 @@ Park runs factor: {f.get('park_runs_factor',1.0):.3f}  Weather: {wx}
 Analysis:"""
 
 
-def _stream_ollama(prompt: str, game_id: int = None):
-    """Stream Ollama response as SSE chunks, caching the full text when done."""
+def _stream_ollama(prompt: str, game_id: int = None, game_date: str = None):
+    """Stream Ollama response as SSE chunks, caching the full text to memory and disk when done."""
     buf = []
     try:
         resp = _requests.post(
@@ -503,7 +525,10 @@ def _stream_ollama(prompt: str, game_id: int = None):
                 yield f"data: {json.dumps({'text': text})}\n\n"
             if chunk.get('done'):
                 if game_id is not None and buf:
-                    _explanation_cache[game_id] = ''.join(buf)
+                    full = ''.join(buf)
+                    _explanation_cache[game_id] = full
+                    if game_date:
+                        _save_disk_explanation(game_date, game_id, full)
                 yield "data: [DONE]\n\n"
                 return
     except Exception as exc:
@@ -525,8 +550,8 @@ def _generate_explanation_sync(game: dict) -> str:
         return ''
 
 
-def _pregenerate_explanations(games: list) -> None:
-    """Background: generate explanations for all valid games sequentially."""
+def _pregenerate_explanations(games: list, game_date: str) -> None:
+    """Background: generate and persist explanations for all valid games sequentially."""
     for game in games:
         gid = game.get('game_id')
         if not gid or game.get('error') or gid in _explanation_cache:
@@ -534,6 +559,7 @@ def _pregenerate_explanations(games: list) -> None:
         text = _generate_explanation_sync(game)
         if text:
             _explanation_cache[gid] = text
+            _save_disk_explanation(game_date, gid, text)
 
 
 def create_app(testing: bool = False) -> Flask:
@@ -553,8 +579,8 @@ def create_app(testing: bool = False) -> Flask:
         if not _simulation_cache or _last_simulated_date != today:
             _simulation_cache = run_daily_simulation(today)
             _last_simulated_date = today
-            _explanation_cache.clear()
-            threading.Thread(target=_pregenerate_explanations, args=(_simulation_cache,), daemon=True).start()
+            _load_disk_explanations(today)
+            threading.Thread(target=_pregenerate_explanations, args=(_simulation_cache, today), daemon=True).start()
 
         if not _results_cache or _last_results_date != yesterday:
             try:
@@ -581,8 +607,8 @@ def create_app(testing: bool = False) -> Flask:
         today = date.today().strftime('%Y-%m-%d')
         _simulation_cache = run_daily_simulation(today)
         _last_simulated_date = today
-        _explanation_cache.clear()
-        threading.Thread(target=_pregenerate_explanations, args=(_simulation_cache,), daemon=True).start()
+        _load_disk_explanations(today)
+        threading.Thread(target=_pregenerate_explanations, args=(_simulation_cache, today), daemon=True).start()
         return redirect(url_for('index'))
 
     @app.route('/retrain', methods=['POST'])
@@ -613,8 +639,9 @@ def create_app(testing: bool = False) -> Flask:
             return Response(stream_with_context(_from_cache()), mimetype='text/event-stream', headers=headers)
 
         prompt = _build_explain_prompt(game)
+        game_date = game.get('game_date', date.today().strftime('%Y-%m-%d'))
         return Response(
-            stream_with_context(_stream_ollama(prompt, game_id=game_id)),
+            stream_with_context(_stream_ollama(prompt, game_id=game_id, game_date=game_date)),
             mimetype='text/event-stream',
             headers=headers,
         )
