@@ -86,6 +86,7 @@
         footer { text-align: center; padding: 20px; color: #333; font-size: 11px; }
 
         @media (max-width: 900px) { .dashboard { grid-template-columns: 1fr; } }
+        @media print { * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; } }
     </style>
 </head>
 <body>
