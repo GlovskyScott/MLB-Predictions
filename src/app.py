@@ -23,11 +23,34 @@ def _hex_to_rgb_str(hex_color: str) -> str:
 
 
 def _bar_color(primary: str, secondary: str) -> str:
-    """Return a visible bar color for dark backgrounds — uses secondary when primary is too dark."""
-    h = primary.lstrip('#')
-    r, g, b = int(h[0:2], 16) / 255, int(h[2:4], 16) / 255, int(h[4:6], 16) / 255
-    luminance = 0.299 * r + 0.587 * g + 0.114 * b
-    return secondary if luminance < 0.25 else primary
+    """Return a legible team color for dark backgrounds.
+    Picks the brighter of primary/secondary, then blends toward white until
+    the result meets the minimum readable luminance.
+    """
+    MIN_LUM = 0.28
+
+    def _lum(hex_color: str) -> float:
+        h = hex_color.lstrip('#')
+        r, g, b = int(h[0:2], 16) / 255, int(h[2:4], 16) / 255, int(h[4:6], 16) / 255
+        return 0.299 * r + 0.587 * g + 0.114 * b
+
+    color = primary if _lum(primary) >= _lum(secondary) else secondary
+
+    if _lum(color) >= MIN_LUM:
+        return color
+
+    # Blend toward white in 5% steps until readable
+    h = color.lstrip('#')
+    r0, g0, b0 = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    for step in range(5, 100, 5):
+        t = step / 100.0
+        r = min(int(r0 + (255 - r0) * t), 255)
+        g = min(int(g0 + (255 - g0) * t), 255)
+        b = min(int(b0 + (255 - b0) * t), 255)
+        if 0.299 * (r / 255) + 0.587 * (g / 255) + 0.114 * (b / 255) >= MIN_LUM:
+            return f"#{r:02x}{g:02x}{b:02x}"
+
+    return '#888888'
 
 
 _MODEL_META_FILE = _DATA_DIR / "model_meta.json"
@@ -309,7 +332,7 @@ def create_app(testing: bool = False) -> Flask:
                 _results_cache = {}
 
         last_7 = _aggregate_days(7)
-        last_30 = _aggregate_days(30)
+        last_30 = _aggregate_days(90)
 
         return render_template('index.html',
                                results=_simulation_cache, sim_date=today,

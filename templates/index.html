@@ -303,14 +303,14 @@
     {# ── Last 30 Days ── #}
     <div class="results-panel">
         <div class="panel-header">
-            <span class="panel-title">Last 30 Days</span>
+            <span class="panel-title">Last 90 Days</span>
             {% if last_30 and last_30.total_games > 0 %}
             <div class="summary-stat"><div class="s-label">Games</div><div class="s-value neutral">{{ last_30.total_games }}</div></div>
             <div class="summary-stat"><div class="s-label" title="% of games where predicted winner was correct">Accuracy</div><div class="s-value {% if last_30.winner_accuracy >= 60 %}good{% else %}neutral{% endif %}">{{ last_30.winner_accuracy }}%</div></div>
             {% if last_30.avg_score_err is not none %}
             <div class="summary-stat"><div class="s-label" title="Average runs prediction error per team">Avg Err</div><div class="s-value {% if last_30.avg_score_err <= 1.5 %}good{% else %}neutral{% endif %}">±{{ "%.1f"|format(last_30.avg_score_err) }}</div></div>
             {% endif %}
-            <div class="summary-stat"><div class="s-label">Days</div><div class="s-value neutral">{{ last_30.days_with_games }}/30</div></div>
+            <div class="summary-stat"><div class="s-label">Days</div><div class="s-value neutral">{{ last_30.days_with_games }}/90</div></div>
             {% endif %}
         </div>
         {% if last_30 and last_30.daily %}
