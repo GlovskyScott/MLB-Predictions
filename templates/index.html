@@ -86,7 +86,26 @@
         footer { text-align: center; padding: 20px; color: #333; font-size: 11px; }
 
         @media (max-width: 900px) { .dashboard { grid-template-columns: 1fr; } }
-        @media print { * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; } }
+        @media print {
+            body { background: #fff !important; color: #111 !important; }
+            header { background: #fff !important; border-bottom: 1px solid #ccc !important; }
+            .game-card { background: #fff !important; border: 1px solid #ddd !important; box-shadow: none !important; }
+            .card-matchup { background: none !important; }
+            .card-detail { background: #fff !important; border-top: 1px solid #eee !important; }
+            .card-prob { background: #fff !important; }
+            .results-panel { background: #fff !important; border: 1px solid #ddd !important; }
+            .panel-header { background: #f7f7f7 !important; border-bottom: 1px solid #ddd !important; }
+            .panel-title, .s-label, .col-header, .subsection-label, .detail-meta, .team-role, .score-label { color: #555 !important; }
+            .s-value.neutral, .score-nums, .r-name, .team-abbr, .actual-score { color: #111 !important; }
+            .inn-table th, .inn-table .inn-lbl-cell { background: #f7f7f7 !important; color: #555 !important; border-color: #ddd !important; }
+            .inn-table td { border-color: #ddd !important; background: #fff !important; }
+            .inn-score-avg, .inn-either-pct { color: #777 !important; }
+            .results-table thead th, .daily-table thead th { background: #f7f7f7 !important; color: #555 !important; }
+            .results-table tbody td, .daily-table tbody td { border-color: #eee !important; }
+            .sub-text { color: #777 !important; }
+            /* Preserve color only on win probability bars */
+            [id^="prob-"], [id^="prob-"] * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+        }
     </style>
 </head>
 <body>
