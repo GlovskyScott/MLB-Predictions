@@ -256,7 +256,12 @@ def run_daily_simulation(sim_date: str = None, n_simulations: int = 1000) -> lis
 
 def run_results_comparison(result_date: str, n_simulations: int = 500) -> dict:
     models = _get_models()
-    games = get_schedule(result_date)
+    year = int(result_date[:4])
+    # Use disk-cached season schedule for past dates — avoids a live API call per day
+    all_games = get_season_schedule(year)
+    games = [g for g in all_games if g.get('game_date') == result_date]
+    if not games:
+        games = get_schedule(result_date)  # fallback for today/future
     completed = [g for g in games if g.get('status') == 'Final'
                  and g.get('home_score') is not None and g.get('away_score') is not None]
 
