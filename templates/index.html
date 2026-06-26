@@ -409,6 +409,9 @@ document.addEventListener('DOMContentLoaded', function () {
             d.home, d.away, d.labels, d.homeName, d.awayName, d.homeColor, d.awayColor, d.nSims);
     });
 
+    const _autoGameIds = [{% for r in results %}{% if not r.get('error') %}{{ r.game_id }},{% endif %}{% endfor %}];
+    autoExplainAll(_autoGameIds);
+
     document.querySelectorAll('.game-time[data-utc]').forEach(function (el) {
         const utc = el.dataset.utc;
         if (!utc) return;
@@ -420,9 +423,9 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 });
 
-function explainGame(gameId, btn) {
+function explainGame(gameId, btn, onDone) {
     const box = document.getElementById('explain-' + gameId);
-    if (box.classList.contains('visible')) {
+    if (box.classList.contains('visible') && !onDone) {
         box.classList.remove('visible');
         btn.textContent = '✦ Explain this prediction';
         btn.classList.remove('loading');
@@ -442,6 +445,7 @@ function explainGame(gameId, btn) {
             btn.textContent = '✦ Hide analysis';
             btn.classList.remove('loading');
             btn.disabled = false;
+            if (onDone) onDone();
             return;
         }
         try {
@@ -452,6 +456,7 @@ function explainGame(gameId, btn) {
                 btn.textContent = '✦ Explain this prediction';
                 btn.classList.remove('loading');
                 btn.disabled = false;
+                if (onDone) onDone();
             } else if (chunk.text) {
                 box.textContent += chunk.text;
             }
@@ -463,7 +468,18 @@ function explainGame(gameId, btn) {
         btn.textContent = '✦ Explain this prediction';
         btn.classList.remove('loading');
         btn.disabled = false;
+        if (onDone) onDone();
     };
+}
+
+async function autoExplainAll(gameIds) {
+    for (const gameId of gameIds) {
+        await new Promise(function(resolve) {
+            const btn = document.getElementById('btn-explain-' + gameId);
+            if (!btn || btn.disabled) { resolve(); return; }
+            explainGame(gameId, btn, resolve);
+        });
+    }
 }
 </script>
 </body>

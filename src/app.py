@@ -426,6 +426,7 @@ def _backfill_results_cache(n_days: int = 90) -> None:
 
 _OLLAMA_URL = "http://localhost:11434/api/generate"
 _OLLAMA_MODEL = "llama3.1:8b"
+_explanation_cache: dict = {}  # game_id → full explanation text
 
 
 def _build_explain_prompt(game: dict) -> str:
@@ -481,7 +482,9 @@ Park runs factor: {f.get('park_runs_factor',1.0):.3f}  Weather: {wx}
 Analysis:"""
 
 
-def _stream_ollama(prompt: str):
+def _stream_ollama(prompt: str, game_id: int = None):
+    """Stream Ollama response as SSE chunks, caching the full text when done."""
+    buf = []
     try:
         resp = _requests.post(
             _OLLAMA_URL,
@@ -496,12 +499,41 @@ def _stream_ollama(prompt: str):
             chunk = json.loads(raw)
             text = chunk.get('response', '')
             if text:
+                buf.append(text)
                 yield f"data: {json.dumps({'text': text})}\n\n"
             if chunk.get('done'):
+                if game_id is not None and buf:
+                    _explanation_cache[game_id] = ''.join(buf)
                 yield "data: [DONE]\n\n"
                 return
     except Exception as exc:
         yield f"data: {json.dumps({'error': str(exc)})}\n\n"
+
+
+def _generate_explanation_sync(game: dict) -> str:
+    """Call Ollama synchronously (no streaming). Used by the background pre-generator."""
+    prompt = _build_explain_prompt(game)
+    try:
+        resp = _requests.post(
+            _OLLAMA_URL,
+            json={'model': _OLLAMA_MODEL, 'prompt': prompt, 'stream': False,
+                  'options': {'num_predict': 350, 'temperature': 0.7}},
+            timeout=120,
+        )
+        return resp.json().get('response', '').strip()
+    except Exception:
+        return ''
+
+
+def _pregenerate_explanations(games: list) -> None:
+    """Background: generate explanations for all valid games sequentially."""
+    for game in games:
+        gid = game.get('game_id')
+        if not gid or game.get('error') or gid in _explanation_cache:
+            continue
+        text = _generate_explanation_sync(game)
+        if text:
+            _explanation_cache[gid] = text
 
 
 def create_app(testing: bool = False) -> Flask:
@@ -521,6 +553,8 @@ def create_app(testing: bool = False) -> Flask:
         if not _simulation_cache or _last_simulated_date != today:
             _simulation_cache = run_daily_simulation(today)
             _last_simulated_date = today
+            _explanation_cache.clear()
+            threading.Thread(target=_pregenerate_explanations, args=(_simulation_cache,), daemon=True).start()
 
         if not _results_cache or _last_results_date != yesterday:
             try:
@@ -547,6 +581,8 @@ def create_app(testing: bool = False) -> Flask:
         today = date.today().strftime('%Y-%m-%d')
         _simulation_cache = run_daily_simulation(today)
         _last_simulated_date = today
+        _explanation_cache.clear()
+        threading.Thread(target=_pregenerate_explanations, args=(_simulation_cache,), daemon=True).start()
         return redirect(url_for('index'))
 
     @app.route('/retrain', methods=['POST'])
@@ -566,11 +602,21 @@ def create_app(testing: bool = False) -> Flask:
                 f"data: {json.dumps({'error': 'Game not found — try refreshing the page.'})}\n\n",
                 mimetype='text/event-stream',
             )
+
+        headers = {'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'}
+
+        if game_id in _explanation_cache:
+            cached = _explanation_cache[game_id]
+            def _from_cache():
+                yield f"data: {json.dumps({'text': cached})}\n\n"
+                yield "data: [DONE]\n\n"
+            return Response(stream_with_context(_from_cache()), mimetype='text/event-stream', headers=headers)
+
         prompt = _build_explain_prompt(game)
         return Response(
-            stream_with_context(_stream_ollama(prompt)),
+            stream_with_context(_stream_ollama(prompt, game_id=game_id)),
             mimetype='text/event-stream',
-            headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
+            headers=headers,
         )
 
     return app
