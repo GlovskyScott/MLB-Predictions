@@ -1,4 +1,5 @@
 import json
+import threading
 import pandas as pd
 from flask import Flask, render_template, redirect, url_for, request
 from datetime import date, timedelta
@@ -264,7 +265,7 @@ def run_results_comparison(result_date: str, n_simulations: int = 500) -> dict:
 
     for game in completed:
         try:
-            features = build_game_features(game, year=2026)
+            features = build_game_features(game, year=2026, for_training=True)
             if models:
                 prediction = predict_game(features, models)
             else:
@@ -386,12 +387,33 @@ def _aggregate_days(n_days: int) -> dict:
     }
 
 
+def _backfill_results_cache(n_days: int = 90) -> None:
+    """Populate results_cache for the last n_days in a background thread.
+
+    Runs after app startup so the index page loads immediately. Each completed
+    date is written to disk; subsequent app restarts skip already-cached dates.
+    """
+    _RESULTS_CACHE_DIR.mkdir(exist_ok=True)
+    for i in range(1, n_days + 1):
+        d = (date.today() - timedelta(days=i)).strftime('%Y-%m-%d')
+        cache_file = _RESULTS_CACHE_DIR / f"{d}.json"
+        if cache_file.exists():
+            continue
+        try:
+            data = run_results_comparison(d, n_simulations=200)
+            if data.get('n_completed', 0) > 0:
+                cache_file.write_text(json.dumps(data, default=str))
+        except Exception:
+            pass
+
+
 def create_app(testing: bool = False) -> Flask:
     app = Flask(__name__, template_folder='../templates', static_folder='../static')
     app.config['TESTING'] = testing
     if not testing:
         bootstrap_data_cache()
         bootstrap_model_cache()
+        threading.Thread(target=_backfill_results_cache, daemon=True).start()
 
     @app.route('/')
     def index():
@@ -412,11 +434,15 @@ def create_app(testing: bool = False) -> Flask:
 
         last_7 = _aggregate_days(7)
         last_30 = _aggregate_days(90)
+        meta = _read_model_meta()
 
         return render_template('index.html',
                                results=_simulation_cache, sim_date=today,
                                yesterday=_results_cache, yesterday_date=yesterday,
-                               last_7=last_7, last_30=last_30)
+                               last_7=last_7, last_30=last_30,
+                               model_version=meta.get('feature_version', '?'),
+                               model_n_games=meta.get('n_games', '?'),
+                               model_years=meta.get('training_years', []))
 
     @app.route('/refresh', methods=['POST'])
     def refresh():

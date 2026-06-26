@@ -358,7 +358,10 @@
 </div><!-- /right -->
 </div><!-- /dashboard -->
 
-<footer>MLB Simulator v1.0 &middot; XGBoost + Monte Carlo &middot; MLB Stats API · pybaseball · Open-Meteo</footer>
+<footer>
+  Model v{{ model_version }} &middot; trained on {{ model_n_games }} games ({{ model_years | join(', ') }})
+  &middot; XGBoost + Monte Carlo &middot; MLB Stats API &middot; pybaseball &middot; Open-Meteo
+</footer>
 
 <script>
 document.addEventListener('DOMContentLoaded', function () {
