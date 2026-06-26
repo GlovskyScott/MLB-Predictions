@@ -238,6 +238,7 @@ def run_daily_simulation(sim_date: str = None, n_simulations: int = 1000) -> lis
                 'weather': weather,
                 'lineup': lineup,
                 'features': features,
+                'elevation_ft': int(features.get('elevation_ft', 0)),
                 'home_pitcher': game.get('home_probable_pitcher', 'TBD'),
                 'away_pitcher': game.get('away_probable_pitcher', 'TBD'),
                 'home_logo': home_meta['logo_url'],
@@ -499,7 +500,7 @@ Handedness OPS edge:
   {away} vs {home_hand}: {f.get('away_bat_ops_vs_sp_hand',0):.3f}
   {home} vs {away_hand}: {f.get('home_bat_ops_vs_sp_hand',0):.3f}
 
-Park runs factor: {f.get('park_runs_factor',1.0):.3f}  Weather: {wx}  Humidity: {f.get('humidity_pct',50):.0f}%
+Park runs factor: {f.get('park_runs_factor',1.0):.3f}  Elevation: {f.get('elevation_ft',500):.0f} ft  Weather: {wx}  Humidity: {f.get('humidity_pct',50):.0f}%
 
 Analysis:"""
 
