@@ -34,6 +34,24 @@ MOCK_SIM_RESULT = {
     'away_probable_pitcher': 'Shane Bieber',
 }
 
+MOCK_RESULTS_DATA = {
+    'result_date': '2026-06-24',
+    'n_completed': 1,
+    'winner_accuracy': 75.0,
+    'avg_score_err': 1.5,
+    'games': [{
+        **MOCK_SIM_RESULT,
+        'status': 'Final',
+        'actual_home_score': 6,
+        'actual_away_score': 3,
+        'actual_home_won': True,
+        'predicted_home_won': True,
+        'home_score_err': 1.0,
+        'away_score_err': 0.5,
+        'winner_correct': True,
+    }],
+}
+
 @pytest.fixture
 def app():
     return create_app(testing=True)
@@ -73,3 +91,32 @@ def test_index_handles_no_games(client, mocker):
     mocker.patch('src.app.run_daily_simulation', return_value=[])
     response = client.get('/')
     assert response.status_code == 200
+
+def test_results_route_returns_200(client, mocker):
+    mocker.patch('src.app.run_results_comparison', return_value=MOCK_RESULTS_DATA)
+    response = client.get('/results/2026-06-24')
+    assert response.status_code == 200
+
+def test_results_contains_accuracy(client, mocker):
+    mocker.patch('src.app.run_results_comparison', return_value=MOCK_RESULTS_DATA)
+    response = client.get('/results/2026-06-24')
+    assert b'75' in response.data
+
+def test_results_shows_correct_wrong(client, mocker):
+    mocker.patch('src.app.run_results_comparison', return_value=MOCK_RESULTS_DATA)
+    response = client.get('/results/2026-06-24')
+    assert b'Correct' in response.data
+
+def test_results_no_games(client, mocker):
+    mocker.patch('src.app.run_results_comparison', return_value={
+        'result_date': '2026-06-24', 'n_completed': 0,
+        'winner_accuracy': 0, 'avg_score_err': None, 'games': [],
+    })
+    response = client.get('/results/2026-06-24')
+    assert response.status_code == 200
+    assert b'No completed games' in response.data
+
+def test_retrain_redirects(client, mocker):
+    mocker.patch('src.app._get_models', return_value={})
+    response = client.post('/retrain')
+    assert response.status_code in (302, 200)

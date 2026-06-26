@@ -76,12 +76,13 @@ def test_get_pitching_stats_returns_dataframe(mocker):
 
 def test_get_pitching_stats_caches_to_csv(mocker, tmp_path):
     mocker.patch('src.fetcher._DATA_DIR', tmp_path)
+    # bref mock needs Lev + Tm columns (what pitching_stats_bref returns)
     mock_df = pd.DataFrame({
-        'Name': ['Cole'], 'Team': ['NYY'], 'ERA': [3.2],
-        'FIP': [3.1], 'xFIP': [3.3], 'WHIP': [1.1], 'K/9': [10.5],
-        'BB/9': [2.1], 'HR/9': [1.1], 'IP': [120.0], 'GS': [20]
+        'Name': ['Cole'], 'Tm': ['NYY'], 'Lev': ['Maj-AL'],
+        'ERA': [3.2], 'WHIP': [1.1], 'SO9': [10.5], 'BB': [30.0],
+        'HR': [15.0], 'IP': [120.0], 'GS': [20], 'G': [20],
     })
-    mock_pb = mocker.patch('pybaseball.pitching_stats', return_value=mock_df)
+    mock_pb = mocker.patch('pybaseball.pitching_stats_bref', return_value=mock_df)
     mocker.patch('pybaseball.cache.enable')
     get_pitching_stats(2026, force_refresh=True)
     get_pitching_stats(2026)  # second call should use cache
@@ -98,13 +99,20 @@ def test_get_batting_stats_returns_dataframe(mocker):
     assert isinstance(result, pd.DataFrame)
     assert 'wOBA' in result.columns
 
-def test_get_bullpen_stats_excludes_starters(mocker, sample_pitching_stats):
-    mocker.patch('pybaseball.pitching_stats', return_value=sample_pitching_stats)
+def test_get_bullpen_stats_excludes_starters(mocker, tmp_path):
+    mocker.patch('src.fetcher._DATA_DIR', tmp_path)
+    # bref format: only starters (GS >= 18)
+    mock_df = pd.DataFrame({
+        'Name': ['Cole', 'Bieber'], 'Tm': ['NYY', 'CLE'], 'Lev': ['Maj-AL', 'Maj-AL'],
+        'ERA': [3.2, 2.9], 'WHIP': [1.1, 1.05], 'SO9': [10.5, 9.8],
+        'BB': [50.0, 45.0], 'HR': [15.0, 12.0], 'IP': [120.0, 110.0],
+        'GS': [20, 18], 'G': [20, 18],
+    })
+    mocker.patch('pybaseball.pitching_stats_bref', return_value=mock_df)
     mocker.patch('pybaseball.cache.enable')
     result = get_bullpen_stats(2026, force_refresh=True)
     assert isinstance(result, pd.DataFrame)
-    # All sample pitchers have GS >= 18, so bullpen should be empty
-    assert len(result) == 0
+    assert len(result) == 0  # both have GS >= 5, so no relievers
 
 def test_get_team_batting_stats_returns_per_team(mocker):
     mock_df = pd.DataFrame({

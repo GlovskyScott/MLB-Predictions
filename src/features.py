@@ -124,8 +124,17 @@ def _get_park_factors(home_team_id: int) -> dict:
     }
 
 
-def build_game_features(game: dict, year: int = 2026) -> dict:
-    """Build a numeric feature vector for one game."""
+_NEUTRAL_WEATHER = {
+    'temperature_f': 72.0, 'wind_speed_mph': 0.0,
+    'wind_direction_deg': 0.0, 'precipitation_mm': 0.0, 'is_dome': False,
+}
+
+
+def build_game_features(game: dict, year: int = 2026, weather: dict = None) -> dict:
+    """Build a numeric feature vector for one game.
+
+    Pass weather=None to fetch live weather, or supply a pre-built dict to skip the API call.
+    """
     pitching_df = get_pitching_stats(year)
     batting_df = get_team_batting_stats(year)
     bullpen_df = get_bullpen_stats(year)
@@ -137,11 +146,12 @@ def build_game_features(game: dict, year: int = 2026) -> dict:
     lat = stadium.get('lat', 39.0)
     lon = stadium.get('lon', -95.0)
 
-    weather = get_weather_for_game(
-        lat=lat, lon=lon,
-        game_datetime=game.get('game_datetime', ''),
-        is_dome=is_dome,
-    )
+    if weather is None:
+        weather = get_weather_for_game(
+            lat=lat, lon=lon,
+            game_datetime=game.get('game_datetime', ''),
+            is_dome=is_dome,
+        )
 
     home_sp = _get_pitcher_stats(game.get('home_probable_pitcher', ''), pitching_df)
     away_sp = _get_pitcher_stats(game.get('away_probable_pitcher', ''), pitching_df)
