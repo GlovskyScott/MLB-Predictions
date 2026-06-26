@@ -1,0 +1,173 @@
+import pytest
+from unittest.mock import patch, MagicMock
+import pandas as pd
+from src.fetcher import (
+    get_schedule, get_probable_pitchers, get_team_roster,
+    get_pitching_stats, get_batting_stats, get_bullpen_stats,
+    get_team_batting_stats, get_weather_forecast, get_weather_historical,
+    get_weather_for_game,
+)
+
+MOCK_SCHEDULE = [
+    {
+        'game_id': 745003,
+        'game_date': '2026-06-25',
+        'game_type': 'R',
+        'status': 'Preview',
+        'away_name': 'Boston Red Sox',
+        'home_name': 'New York Yankees',
+        'away_id': 111,
+        'home_id': 147,
+        'venue_id': 3313,
+        'venue_name': 'Yankee Stadium',
+        'game_datetime': '2026-06-25T23:05:00Z',
+        'away_probable_pitcher': 'Shane Bieber',
+        'home_probable_pitcher': 'Gerrit Cole',
+    }
+]
+
+# --- Schedule tests ---
+
+def test_get_schedule_returns_list(mocker):
+    mocker.patch('statsapi.schedule', return_value=MOCK_SCHEDULE)
+    result = get_schedule('2026-06-25')
+    assert isinstance(result, list)
+    assert len(result) == 1
+
+def test_get_schedule_filters_non_regular_season(mocker):
+    mock_data = MOCK_SCHEDULE + [{**MOCK_SCHEDULE[0], 'game_type': 'S', 'game_id': 99}]
+    mocker.patch('statsapi.schedule', return_value=mock_data)
+    result = get_schedule('2026-06-25')
+    assert len(result) == 1
+
+def test_get_schedule_game_has_required_fields(mocker):
+    mocker.patch('statsapi.schedule', return_value=MOCK_SCHEDULE)
+    games = get_schedule('2026-06-25')
+    game = games[0]
+    required = {'game_id', 'game_date', 'home_id', 'away_id', 'home_name', 'away_name', 'venue_id', 'game_datetime'}
+    assert required.issubset(game.keys())
+
+def test_get_schedule_handles_empty_date(mocker):
+    mocker.patch('statsapi.schedule', return_value=[])
+    result = get_schedule('2026-06-25')
+    assert result == []
+
+def test_get_probable_pitchers_returns_dict(mocker):
+    mocker.patch('statsapi.schedule', return_value=MOCK_SCHEDULE)
+    result = get_probable_pitchers(745003, MOCK_SCHEDULE[0])
+    assert isinstance(result, dict)
+    assert 'home_pitcher_name' in result
+    assert 'away_pitcher_name' in result
+
+# --- pybaseball stats tests ---
+
+def test_get_pitching_stats_returns_dataframe(mocker):
+    mock_df = pd.DataFrame({
+        'Name': ['Gerrit Cole'], 'Team': ['NYY'], 'ERA': [3.2],
+        'FIP': [3.1], 'xFIP': [3.3], 'WHIP': [1.1],
+        'K/9': [10.5], 'BB/9': [2.1], 'HR/9': [1.1], 'IP': [120.0], 'GS': [20],
+    })
+    mocker.patch('pybaseball.pitching_stats', return_value=mock_df)
+    mocker.patch('pybaseball.cache.enable')
+    result = get_pitching_stats(2026, force_refresh=True)
+    assert isinstance(result, pd.DataFrame)
+    assert 'ERA' in result.columns
+    assert 'Name' in result.columns
+
+def test_get_pitching_stats_caches_to_csv(mocker, tmp_path):
+    mocker.patch('src.fetcher._DATA_DIR', tmp_path)
+    mock_df = pd.DataFrame({
+        'Name': ['Cole'], 'Team': ['NYY'], 'ERA': [3.2],
+        'FIP': [3.1], 'xFIP': [3.3], 'WHIP': [1.1], 'K/9': [10.5],
+        'BB/9': [2.1], 'HR/9': [1.1], 'IP': [120.0], 'GS': [20]
+    })
+    mock_pb = mocker.patch('pybaseball.pitching_stats', return_value=mock_df)
+    mocker.patch('pybaseball.cache.enable')
+    get_pitching_stats(2026, force_refresh=True)
+    get_pitching_stats(2026)  # second call should use cache
+    assert mock_pb.call_count == 1
+
+def test_get_batting_stats_returns_dataframe(mocker):
+    mock_df = pd.DataFrame({
+        'Name': ['Judge'], 'Team': ['NYY'], 'wOBA': [0.42],
+        'OPS': [1.05], 'ISO': [0.32], 'PA': [300],
+    })
+    mocker.patch('pybaseball.batting_stats', return_value=mock_df)
+    mocker.patch('pybaseball.cache.enable')
+    result = get_batting_stats(2026, force_refresh=True)
+    assert isinstance(result, pd.DataFrame)
+    assert 'wOBA' in result.columns
+
+def test_get_bullpen_stats_excludes_starters(mocker, sample_pitching_stats):
+    mocker.patch('pybaseball.pitching_stats', return_value=sample_pitching_stats)
+    mocker.patch('pybaseball.cache.enable')
+    result = get_bullpen_stats(2026, force_refresh=True)
+    assert isinstance(result, pd.DataFrame)
+    # All sample pitchers have GS >= 18, so bullpen should be empty
+    assert len(result) == 0
+
+def test_get_team_batting_stats_returns_per_team(mocker):
+    mock_df = pd.DataFrame({
+        'Team': ['NYY', 'BOS'], 'wOBA': [0.34, 0.32],
+        'OPS': [0.82, 0.79], 'R': [380, 340], 'H': [700, 670],
+    })
+    mocker.patch('pybaseball.team_batting', return_value=mock_df)
+    mocker.patch('pybaseball.cache.enable')
+    result = get_team_batting_stats(2026, force_refresh=True)
+    assert isinstance(result, pd.DataFrame)
+    assert 'wOBA' in result.columns
+
+# --- Weather tests ---
+
+MOCK_FORECAST_RESPONSE = {
+    "hourly": {
+        "time": ["2026-06-25T22:00", "2026-06-25T23:00"],
+        "temperature_2m": [75.2, 74.0],
+        "windspeed_10m": [12.5, 11.0],
+        "winddirection_10m": [180.0, 185.0],
+        "precipitation": [0.0, 0.0],
+    }
+}
+
+def test_get_weather_forecast_returns_dict(mocker):
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = MOCK_FORECAST_RESPONSE
+    mock_resp.raise_for_status = MagicMock()
+    mocker.patch('requests.get', return_value=mock_resp)
+    result = get_weather_forecast(lat=40.8296, lon=-73.9262, game_datetime='2026-06-25T23:05:00Z')
+    assert isinstance(result, dict)
+    assert 'temperature_f' in result
+    assert 'wind_speed_mph' in result
+    assert 'wind_direction_deg' in result
+    assert 'precipitation_mm' in result
+
+def test_get_weather_forecast_temperature_in_range(mocker):
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = MOCK_FORECAST_RESPONSE
+    mock_resp.raise_for_status = MagicMock()
+    mocker.patch('requests.get', return_value=mock_resp)
+    result = get_weather_forecast(lat=40.8296, lon=-73.9262, game_datetime='2026-06-25T23:05:00Z')
+    assert 0 < result['temperature_f'] < 130
+
+def test_get_weather_dome_returns_neutral():
+    result = get_weather_for_game(lat=27.7683, lon=-82.6534, game_datetime='2026-06-25T23:05:00Z', is_dome=True)
+    assert result['temperature_f'] == 72.0
+    assert result['wind_speed_mph'] == 0.0
+    assert result['is_dome'] is True
+
+def test_get_weather_historical_returns_dict(mocker):
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {
+        "hourly": {
+            "time": ["2026-04-01T19:00", "2026-04-01T20:00"],
+            "temperature_2m": [65.0, 64.0],
+            "windspeed_10m": [8.0, 7.5],
+            "winddirection_10m": [220.0, 225.0],
+            "precipitation": [0.0, 0.0],
+        }
+    }
+    mock_resp.raise_for_status = MagicMock()
+    mocker.patch('requests.get', return_value=mock_resp)
+    result = get_weather_historical(lat=40.8296, lon=-73.9262, game_date='2026-04-01', game_hour=19)
+    assert isinstance(result, dict)
+    assert 'temperature_f' in result
