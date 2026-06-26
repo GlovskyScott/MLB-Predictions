@@ -238,6 +238,7 @@ def run_daily_simulation(sim_date: str = None, n_simulations: int = 1000) -> lis
                 'weather': weather,
                 'lineup': lineup,
                 'features': features,
+                'elevation_ft': int(features.get('elevation_ft', 0)),
                 'home_pitcher': game.get('home_probable_pitcher', 'TBD'),
                 'away_pitcher': game.get('away_probable_pitcher', 'TBD'),
                 'home_logo': home_meta['logo_url'],
