@@ -392,24 +392,32 @@ def _aggregate_days(n_days: int) -> dict:
     }
 
 
+def _backfill_one(d: str) -> None:
+    cache_file = _RESULTS_CACHE_DIR / f"{d}.json"
+    if cache_file.exists():
+        return
+    try:
+        data = run_results_comparison(d, n_simulations=100)
+        if data.get('n_completed', 0) > 0:
+            cache_file.write_text(json.dumps(data, default=str))
+    except Exception:
+        pass
+
+
 def _backfill_results_cache(n_days: int = 90) -> None:
-    """Populate results_cache for the last n_days in a background thread.
+    """Populate results_cache for the last n_days using parallel workers.
 
     Runs after app startup so the index page loads immediately. Each completed
     date is written to disk; subsequent app restarts skip already-cached dates.
     """
     _RESULTS_CACHE_DIR.mkdir(exist_ok=True)
-    for i in range(1, n_days + 1):
-        d = (date.today() - timedelta(days=i)).strftime('%Y-%m-%d')
-        cache_file = _RESULTS_CACHE_DIR / f"{d}.json"
-        if cache_file.exists():
-            continue
-        try:
-            data = run_results_comparison(d, n_simulations=200)
-            if data.get('n_completed', 0) > 0:
-                cache_file.write_text(json.dumps(data, default=str))
-        except Exception:
-            pass
+    dates = [
+        (date.today() - timedelta(days=i)).strftime('%Y-%m-%d')
+        for i in range(1, n_days + 1)
+        if not (_RESULTS_CACHE_DIR / f"{(date.today() - timedelta(days=i)).strftime('%Y-%m-%d')}.json").exists()
+    ]
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        pool.map(_backfill_one, dates)
 
 
 def create_app(testing: bool = False) -> Flask:
