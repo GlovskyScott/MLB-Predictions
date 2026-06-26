@@ -164,6 +164,9 @@
             <div class="score-center">
                 <div class="score-nums" title="Most common final score across {{ r.n_simulations }} simulations">{{ r.modal_away_score }}&nbsp;—&nbsp;{{ r.modal_home_score }}</div>
                 <div class="score-label">predicted</div>
+                {% if r.game_datetime %}
+                <div class="game-time" data-utc="{{ r.game_datetime }}" style="font-size:10px;color:#555;margin-top:3px;"></div>
+                {% endif %}
             </div>
             <div class="team-side home">
                 <img class="team-logo" src="{{ r.home_logo }}" alt="{{ r.home_name }}" loading="lazy">
@@ -231,6 +234,28 @@
 
             <div class="subsection-label" style="margin-top:10px;">Score Probability — Likelihood of Each Final Run Total Across Simulations</div>
             <div class="chart-container"><canvas id="chart-{{ r.game_id }}"></canvas></div>
+
+            {% if r.lineup and (r.lineup.get('home') or r.lineup.get('away')) %}
+            <div class="subsection-label" style="margin-top:10px;">Lineup</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:11px;">
+                <div>
+                    <div style="font-size:9px;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:.6px;margin-bottom:4px;">{{ r.away_name }} (Away)</div>
+                    {% for name in r.lineup.get('away', []) %}
+                    <div style="padding:2px 0;color:#ccc;border-bottom:1px solid #1a1a1a;">
+                        <span style="color:#444;margin-right:5px;font-size:10px;">{{ loop.index }}</span>{{ name }}
+                    </div>
+                    {% endfor %}
+                </div>
+                <div>
+                    <div style="font-size:9px;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:.6px;margin-bottom:4px;">{{ r.home_name }} (Home)</div>
+                    {% for name in r.lineup.get('home', []) %}
+                    <div style="padding:2px 0;color:#ccc;border-bottom:1px solid #1a1a1a;">
+                        <span style="color:#444;margin-right:5px;font-size:10px;">{{ loop.index }}</span>{{ name }}
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
         </div>
     {% endif %}
     </div>
@@ -370,6 +395,16 @@ document.addEventListener('DOMContentLoaded', function () {
         const d = window['cdata_' + gameId];
         if (d) renderScoreDistribution(canvas.id,
             d.home, d.away, d.labels, d.homeName, d.awayName, d.homeColor, d.awayColor, d.nSims);
+    });
+
+    document.querySelectorAll('.game-time[data-utc]').forEach(function (el) {
+        const utc = el.dataset.utc;
+        if (!utc) return;
+        try {
+            const d = new Date(utc);
+            if (isNaN(d.getTime())) return;
+            el.textContent = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', timeZoneName: 'short' });
+        } catch (e) {}
     });
 });
 </script>

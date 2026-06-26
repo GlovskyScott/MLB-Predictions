@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from src.fetcher import (
     get_schedule, get_pitching_stats, get_team_batting_stats,
     get_bullpen_stats, get_season_schedule, get_weather_for_game, get_game_linescore,
-    bootstrap_data_cache, bootstrap_model_cache,
+    get_game_lineup, bootstrap_data_cache, bootstrap_model_cache,
 )
 from src.features import build_game_features, build_inning_feature_row, _NEUTRAL_WEATHER, FEATURE_VERSION
 from src.model import (
@@ -229,10 +229,12 @@ def run_daily_simulation(sim_date: str = None, n_simulations: int = 1000) -> lis
                     pass
             home_meta = get_team_meta(game['home_id'])
             away_meta = get_team_meta(game['away_id'])
+            lineup = get_game_lineup(game.get('game_id'))
             results.append({
                 **game,
                 **sim,
                 'weather': weather,
+                'lineup': lineup,
                 'home_pitcher': game.get('home_probable_pitcher', 'TBD'),
                 'away_pitcher': game.get('away_probable_pitcher', 'TBD'),
                 'home_logo': home_meta['logo_url'],

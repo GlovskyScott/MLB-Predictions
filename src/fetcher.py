@@ -252,7 +252,7 @@ def get_game_lineup(game_pk: int) -> dict:
     try:
         data = statsapi.get('game', {
             'gamePk': game_pk,
-            'fields': 'gameData,players,liveData,boxscore,teams,home,away,battingOrder',
+            'fields': 'gameData,players,fullName,liveData,boxscore,teams,home,away,battingOrder',
         })
         box = data.get('liveData', {}).get('boxscore', {}).get('teams', {})
         home_order = box.get('home', {}).get('battingOrder', [])
