@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ game.away_name }} @ {{ game.home_name }} — MLB Simulator</title>
+    <script src="/static/chart.umd.min.js"></script>
+    <script src="/static/charts.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a0a; color: #e8e8e8; }
+        header { background: #1a1a2e; padding: 16px 24px; border-bottom: 2px solid #0064c8; }
+        header a { color: #0064c8; text-decoration: none; font-size: 14px; }
+        header h1 { font-size: 24px; margin-top: 8px; }
+        main { max-width: 900px; margin: 0 auto; padding: 32px 16px; }
+        .section { background: #141414; border: 1px solid #2a2a2a; border-radius: 10px; padding: 20px; margin-bottom: 20px; }
+        .section h2 { font-size: 16px; color: #aaa; margin-bottom: 16px; text-transform: uppercase; letter-spacing: 1px; }
+        .score-display { font-size: 48px; font-weight: 900; text-align: center; letter-spacing: 4px; padding: 20px 0; }
+        .teams-row { display: flex; justify-content: space-between; font-size: 13px; color: #888; }
+        .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+        .stat-item label { font-size: 11px; color: #666; text-transform: uppercase; display: block; margin-bottom: 4px; }
+        .stat-item .value { font-size: 20px; font-weight: 700; }
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        th { background: #222; padding: 8px; color: #888; text-align: center; }
+        td { padding: 8px; text-align: center; border-top: 1px solid #1e1e1e; }
+        .away-row td { color: #6aade4; }
+        .home-row td { color: #e46a6a; }
+        .chart-big { height: 200px; margin-top: 12px; position: relative; }
+        .pitcher-card { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+        .pitcher-stat { font-size: 12px; color: #aaa; margin-top: 4px; }
+        .pitcher-name { font-size: 16px; font-weight: 700; }
+        .win-prob-detail { margin: 12px 0; }
+    </style>
+</head>
+<body>
+<header>
+    <a href="/">← Back to Today's Games</a>
+    <h1>{{ game.away_name }} @ {{ game.home_name }}</h1>
+</header>
+<main>
+    <div class="section">
+        <h2>Predicted Outcome</h2>
+        <div class="score-display">
+            {{ game.median_away_score|round|int }} — {{ game.median_home_score|round|int }}
+        </div>
+        <div class="teams-row">
+            <span>{{ game.away_name }} ({{ game.away_win_pct }}% win)</span>
+            <span>{{ game.home_name }} ({{ game.home_win_pct }}% win)</span>
+        </div>
+        <div class="win-prob-detail" id="prob-detail"></div>
+        <script>
+            renderWinProbBar(
+                'prob-detail',
+                {{ game.home_win_pct }}, {{ game.away_win_pct }},
+                {{ game.home_name | tojson }}, {{ game.away_name | tojson }}
+            );
+        </script>
+    </div>
+
+    <div class="section">
+        <h2>Inning-by-Inning Breakdown (Median of {{ game.n_simulations }} Simulations)</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Team</th>
+                    {% for i in range(1, 10) %}<th>{{ i }}</th>{% endfor %}
+                    <th>Total</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr class="away-row">
+                    <td>{{ game.away_name.split()[-1] }}</td>
+                    {% for v in game.away_innings %}<td>{{ "%.1f"|format(v) }}</td>{% endfor %}
+                    <td><strong>{{ game.median_away_score|round|int }}</strong></td>
+                </tr>
+                <tr class="home-row">
+                    <td>{{ game.home_name.split()[-1] }}</td>
+                    {% for v in game.home_innings %}<td>{{ "%.1f"|format(v) }}</td>{% endfor %}
+                    <td><strong>{{ game.median_home_score|round|int }}</strong></td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <div class="section">
+        <h2>Run Distribution</h2>
+        <div class="chart-big">
+            <canvas id="dist-chart"></canvas>
+        </div>
+        <script>
+            renderDistributionChart(
+                'dist-chart',
+                {{ game.score_distribution.home | tojson }},
+                {{ game.score_distribution.away | tojson }},
+                {{ game.score_distribution.labels | tojson }},
+                {{ game.home_name | tojson }},
+                {{ game.away_name | tojson }}
+            );
+        </script>
+    </div>
+
+    <div class="section">
+        <h2>Starting Pitchers</h2>
+        <div class="pitcher-card">
+            <div>
+                <div class="pitcher-name">{{ game.home_pitcher }}</div>
+                <div class="pitcher-stat">{{ game.home_name }} (Home)</div>
+            </div>
+            <div>
+                <div class="pitcher-name">{{ game.away_pitcher }}</div>
+                <div class="pitcher-stat">{{ game.away_name }} (Away)</div>
+            </div>
+        </div>
+    </div>
+
+    {% if game.weather %}
+    <div class="section">
+        <h2>Game Conditions · {{ game.venue_name }}</h2>
+        {% if game.weather.is_dome %}
+        <p>🏟️ Indoor — climate-controlled dome</p>
+        {% else %}
+        <div class="stat-grid">
+            <div class="stat-item">
+                <label>Temperature</label>
+                <div class="value">{{ game.weather.temperature_f|round|int }}°F</div>
+            </div>
+            <div class="stat-item">
+                <label>Wind Speed</label>
+                <div class="value">{{ game.weather.wind_speed_mph|round|int }} mph</div>
+            </div>
+            <div class="stat-item">
+                <label>Wind Direction</label>
+                <div class="value">{{ game.weather.wind_direction_deg|round|int }}°</div>
+            </div>
+            <div class="stat-item">
+                <label>Precipitation</label>
+                <div class="value">{{ "%.1f"|format(game.weather.precipitation_mm) }} mm</div>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+</main>
+</body>
+</html>

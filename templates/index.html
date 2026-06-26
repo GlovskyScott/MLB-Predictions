@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MLB Simulator — {{ sim_date }}</title>
+    <script src="/static/chart.umd.min.js"></script>
+    <script src="/static/charts.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a0a; color: #e8e8e8; }
+        header { background: #1a1a2e; padding: 16px 24px; display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #0064c8; }
+        header h1 { font-size: 22px; color: #fff; }
+        .date-badge { font-size: 13px; color: #aaa; }
+        .refresh-btn { background: #0064c8; color: white; border: none; padding: 8px 18px; border-radius: 6px; cursor: pointer; font-size: 14px; }
+        .refresh-btn:hover { background: #0052a3; }
+        main { max-width: 1200px; margin: 0 auto; padding: 24px 16px; }
+        .no-games { text-align: center; color: #666; padding: 60px; font-size: 18px; }
+        .games-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(520px, 1fr)); gap: 20px; }
+        .game-card { background: #141414; border: 1px solid #2a2a2a; border-radius: 10px; padding: 20px; }
+        .game-card:hover { border-color: #0064c8; }
+        .game-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 14px; }
+        .matchup { font-size: 17px; font-weight: 700; }
+        .venue-info { font-size: 12px; color: #888; margin-top: 4px; }
+        .weather-badge { font-size: 11px; color: #aaa; text-align: right; }
+        .win-prob { margin: 12px 0; }
+        .predicted-score { text-align: center; font-size: 28px; font-weight: 800; letter-spacing: 2px; margin: 12px 0; color: #fff; }
+        .pitchers { display: flex; justify-content: space-between; font-size: 12px; color: #aaa; margin: 8px 0; }
+        .innings-table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 12px; }
+        .innings-table th { background: #222; padding: 5px 8px; color: #888; font-weight: 600; text-align: center; }
+        .innings-table td { padding: 5px 8px; text-align: center; border-top: 1px solid #1e1e1e; }
+        .away-row td { color: #6aade4; }
+        .home-row td { color: #e46a6a; }
+        .chart-container { height: 140px; margin-top: 12px; position: relative; }
+        .detail-link { display: block; text-align: center; margin-top: 12px; color: #0064c8; font-size: 13px; text-decoration: none; }
+        .detail-link:hover { text-decoration: underline; }
+        .error-card { color: #e46a6a; font-size: 13px; }
+        footer { text-align: center; padding: 24px; color: #444; font-size: 12px; }
+    </style>
+</head>
+<body>
+<header>
+    <div>
+        <h1>⚾ MLB Simulator</h1>
+        <div class="date-badge">{{ sim_date }} · {{ results|length }} game(s)</div>
+    </div>
+    <form action="/refresh" method="post">
+        <button class="refresh-btn" type="submit">↻ Refresh</button>
+    </form>
+</header>
+<main>
+    {% if not results %}
+    <div class="no-games">No games scheduled for {{ sim_date }}.</div>
+    {% else %}
+    <div class="games-grid">
+        {% for r in results %}
+        <div class="game-card">
+            {% if r.get('error') %}
+            <div class="matchup">{{ r.away_name }} @ {{ r.home_name }}</div>
+            <div class="error-card">Simulation error: {{ r.error }}</div>
+            {% else %}
+            <div class="game-header">
+                <div>
+                    <div class="matchup">{{ r.away_name }} @ {{ r.home_name }}</div>
+                    <div class="venue-info">{{ r.venue_name }} · {{ r.game_datetime[11:16] if r.game_datetime else '' }} UTC</div>
+                </div>
+                <div class="weather-badge">
+                    {% if r.weather %}
+                        {% if r.weather.is_dome %}
+                        🏟️ Dome
+                        {% else %}
+                        🌡️ {{ r.weather.temperature_f|round|int }}°F
+                        💨 {{ r.weather.wind_speed_mph|round|int }} mph
+                        {% endif %}
+                    {% endif %}
+                </div>
+            </div>
+
+            <div class="pitchers">
+                <span>🔵 SP: {{ r.away_pitcher }}</span>
+                <span>SP: {{ r.home_pitcher }} 🔴</span>
+            </div>
+
+            <div class="win-prob" id="prob-{{ r.game_id }}"></div>
+            <script>
+                renderWinProbBar(
+                    'prob-{{ r.game_id }}',
+                    {{ r.home_win_pct }}, {{ r.away_win_pct }},
+                    {{ r.home_name.split()[-1] | tojson }}, {{ r.away_name.split()[-1] | tojson }}
+                );
+            </script>
+
+            <div class="predicted-score">
+                {{ r.away_name.split()[-1] }} {{ r.median_away_score|round|int }}
+                &nbsp;—&nbsp;
+                {{ r.median_home_score|round|int }} {{ r.home_name.split()[-1] }}
+            </div>
+
+            <table class="innings-table">
+                <thead>
+                    <tr>
+                        <th>Team</th>
+                        {% for i in range(1, 10) %}<th>{{ i }}</th>{% endfor %}
+                        <th>R</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr class="away-row">
+                        <td>{{ r.away_name.split()[-1] }}</td>
+                        {% for v in r.away_innings %}<td>{{ v|round(1) }}</td>{% endfor %}
+                        <td><strong>{{ r.median_away_score|round|int }}</strong></td>
+                    </tr>
+                    <tr class="home-row">
+                        <td>{{ r.home_name.split()[-1] }}</td>
+                        {% for v in r.home_innings %}<td>{{ v|round(1) }}</td>{% endfor %}
+                        <td><strong>{{ r.median_home_score|round|int }}</strong></td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <div class="chart-container">
+                <canvas id="chart-{{ r.game_id }}"></canvas>
+            </div>
+            <script>
+                renderDistributionChart(
+                    'chart-{{ r.game_id }}',
+                    {{ r.score_distribution.home | tojson }},
+                    {{ r.score_distribution.away | tojson }},
+                    {{ r.score_distribution.labels | tojson }},
+                    {{ r.home_name.split()[-1] | tojson }},
+                    {{ r.away_name.split()[-1] | tojson }}
+                );
+            </script>
+
+            <a class="detail-link" href="/game/{{ r.game_id }}">View full detail →</a>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+</main>
+<footer>MLB Simulator v1.0 · Powered by XGBoost + Monte Carlo · Data: MLB Stats API, pybaseball, Open-Meteo</footer>
+</body>
+</html>
