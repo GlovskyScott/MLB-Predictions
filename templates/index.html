@@ -85,6 +85,13 @@
         .no-games { text-align: center; color: #555; padding: 40px; font-size: 14px; }
         footer { text-align: center; padding: 20px; color: #333; font-size: 11px; }
 
+        /* ── AI explanation ── */
+        .btn-explain { background: none; border: 1px solid #2a2a2a; color: #666; padding: 5px 10px; border-radius: 5px; cursor: pointer; font-size: 11px; font-weight: 600; width: 100%; margin-top: 10px; transition: border-color .15s, color .15s; }
+        .btn-explain:hover { border-color: #444; color: #aaa; }
+        .btn-explain.loading { color: #1a6fd4; border-color: #1a6fd4; cursor: default; }
+        .explain-box { margin-top: 10px; padding: 12px; background: #0e0e0e; border: 1px solid #1e1e1e; border-radius: 6px; font-size: 12px; line-height: 1.7; color: #bbb; display: none; white-space: pre-wrap; }
+        .explain-box.visible { display: block; }
+
         @media (max-width: 900px) { .dashboard { grid-template-columns: 1fr; } }
         @media print {
             body { background: #fff !important; color: #111 !important; }
@@ -234,6 +241,11 @@
 
             <div class="subsection-label" style="margin-top:10px;">Score Probability — Likelihood of Each Final Run Total Across Simulations</div>
             <div class="chart-container"><canvas id="chart-{{ r.game_id }}"></canvas></div>
+
+            <button class="btn-explain" onclick="explainGame({{ r.game_id }}, this)" id="btn-explain-{{ r.game_id }}">
+                ✦ Explain this prediction
+            </button>
+            <div class="explain-box" id="explain-{{ r.game_id }}"></div>
 
             {% if r.lineup and (r.lineup.get('home') or r.lineup.get('away')) %}
             <div class="subsection-label" style="margin-top:10px;">Lineup</div>
@@ -407,6 +419,52 @@ document.addEventListener('DOMContentLoaded', function () {
         } catch (e) {}
     });
 });
+
+function explainGame(gameId, btn) {
+    const box = document.getElementById('explain-' + gameId);
+    if (box.classList.contains('visible')) {
+        box.classList.remove('visible');
+        btn.textContent = '✦ Explain this prediction';
+        btn.classList.remove('loading');
+        return;
+    }
+
+    btn.textContent = '⏳ Generating analysis…';
+    btn.classList.add('loading');
+    btn.disabled = true;
+    box.textContent = '';
+    box.classList.add('visible');
+
+    const evtSource = new EventSource('/explain/' + gameId);
+    evtSource.onmessage = function (e) {
+        if (e.data === '[DONE]') {
+            evtSource.close();
+            btn.textContent = '✦ Hide analysis';
+            btn.classList.remove('loading');
+            btn.disabled = false;
+            return;
+        }
+        try {
+            const chunk = JSON.parse(e.data);
+            if (chunk.error) {
+                box.textContent = '⚠ ' + chunk.error;
+                evtSource.close();
+                btn.textContent = '✦ Explain this prediction';
+                btn.classList.remove('loading');
+                btn.disabled = false;
+            } else if (chunk.text) {
+                box.textContent += chunk.text;
+            }
+        } catch (_) {}
+    };
+    evtSource.onerror = function () {
+        evtSource.close();
+        if (!box.textContent) box.textContent = '⚠ Could not reach Ollama — make sure it is running.';
+        btn.textContent = '✦ Explain this prediction';
+        btn.classList.remove('loading');
+        btn.disabled = false;
+    };
+}
 </script>
 </body>
 </html>
