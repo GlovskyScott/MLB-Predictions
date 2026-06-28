@@ -123,6 +123,7 @@ def build_inning_training_df(years: list[int] = None) -> pd.DataFrame:
                     inn_runs = linescore[key][inning - 1]
                     row = build_inning_feature_row(game_feats, inning, batting_is_home)
                     row['scored'] = 1 if inn_runs >= 1 else 0
+                    row['game_date'] = game.get('game_date', '')
                     rows.append(row)
     return pd.DataFrame(rows) if rows else pd.DataFrame()
 

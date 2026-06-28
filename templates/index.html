@@ -20,11 +20,9 @@
         /* ── Two-column layout ── */
         .dashboard { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; max-width: 1500px; margin: 0 auto; padding: 16px; align-items: start; }
         .col-header { font-size: 11px; font-weight: 700; color: #555; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid #1e1e1e; }
-        .picks-panel { max-width: 1500px; margin: 14px auto 0; padding: 13px 18px; background: linear-gradient(135deg, #13212f 0%, #141414 60%); border: 1px solid #20405a; border-radius: 10px; }
-        .picks-title { font-size: 13px; font-weight: 800; color: #eaf2ff; text-transform: uppercase; letter-spacing: 0.06em; }
-        .picks-sub { font-size: 10px; font-weight: 600; color: #6ea3d6; text-transform: none; letter-spacing: 0; margin-left: 6px; }
-        .picks-body { font-size: 13px; line-height: 1.65; color: #cdd9e6; white-space: pre-wrap; margin-top: 8px; }
-        .picks-loading { color: #5a7a96; font-style: italic; }
+        .row-edge td { color: #5dd47e; font-weight: 700; border-top: 1px solid #1c1c1c; }
+        .row-edge td:first-child { border-left-color: #2f8f4f; color: #5dd47e; }
+        .row-edge .odds-team { color: #5dd47e; }
 
         /* ── Game cards ── */
         .game-card { background: #141414; border: 1px solid #222; border-radius: 10px; overflow: hidden; margin-bottom: 12px; }
@@ -57,6 +55,7 @@
         .okey::before { content: ''; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; }
         .okey-model { color: #7fb0e8; } .okey-model::before { background: #4a86e0; }
         .okey-espn { color: #e6ad62; } .okey-espn::before { background: #e6ad62; }
+        .okey-edge { color: #5dd47e; } .okey-edge::before { background: #5dd47e; }
         .card-detail { border-top: 1px solid #1e1e1e; padding: 10px 12px; }
         .detail-meta { display: flex; justify-content: space-between; font-size: 10px; color: #666; margin-bottom: 8px; gap: 4px; flex-wrap: wrap; }
         .chart-container { height: 220px; position: relative; margin-bottom: 6px; }
@@ -109,6 +108,24 @@
 
         /* ── AI explanation ── */
         .explain-box { margin-top: 10px; padding: 12px; background: #0e0e0e; border: 1px solid #1e1e1e; border-radius: 6px; font-size: 12px; line-height: 1.7; color: #bbb; white-space: pre-wrap; }
+        .ai-head { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; }
+        .discuss-btn { background: #14283d; color: #6ea3d6; border: 1px solid #234; border-radius: 5px; font-size: 10px; font-weight: 700; padding: 3px 8px; cursor: pointer; }
+        .discuss-btn:hover { background: #1a3551; color: #9ec5ff; }
+        /* Chat assistant */
+        #chat-fab { position: fixed; bottom: 18px; right: 18px; z-index: 60; background: #1a6fd4; color: #fff; border: none; border-radius: 24px; padding: 11px 17px; font-size: 13px; font-weight: 800; cursor: pointer; box-shadow: 0 4px 18px rgba(0,0,0,.55); }
+        .chat-panel { position: fixed; bottom: 18px; right: 18px; z-index: 61; width: 390px; max-width: calc(100vw - 24px); height: 560px; max-height: calc(100vh - 36px); background: #0d0d0d; border: 1px solid #2a2a2a; border-radius: 12px; display: flex; flex-direction: column; box-shadow: 0 10px 34px rgba(0,0,0,.65); }
+        .chat-head { display: flex; justify-content: space-between; align-items: center; padding: 11px 14px; border-bottom: 1px solid #1e1e1e; font-weight: 800; font-size: 13px; color: #eaf2ff; }
+        .chat-x { background: none; border: none; color: #888; cursor: pointer; font-size: 15px; }
+        .chat-focus { padding: 6px 12px; font-size: 11px; color: #6ea3d6; background: #11212f; border-bottom: 1px solid #1e2a36; display: flex; justify-content: space-between; }
+        .chat-clear { background: none; border: none; color: #557; cursor: pointer; font-size: 10px; }
+        .chat-msgs { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 9px; }
+        .chat-msg { font-size: 13px; line-height: 1.55; padding: 8px 11px; border-radius: 9px; max-width: 88%; white-space: pre-wrap; }
+        .chat-user { align-self: flex-end; background: #1a3a5c; color: #eaf2ff; }
+        .chat-bot { align-self: flex-start; background: #161616; border: 1px solid #222; color: #d2d6dc; }
+        .chat-empty { color: #555; font-size: 12px; text-align: center; margin: 24px 10px; line-height: 1.5; }
+        .chat-input { display: flex; gap: 6px; padding: 10px; border-top: 1px solid #1e1e1e; }
+        .chat-input input { flex: 1; background: #161616; border: 1px solid #2a2a2a; border-radius: 8px; padding: 8px 10px; color: #eee; font-size: 13px; }
+        .chat-input button { background: #1a6fd4; color: #fff; border: none; border-radius: 8px; padding: 0 14px; font-weight: 700; cursor: pointer; }
         .explain-queued { color: #444; font-style: italic; }
 
         @media (max-width: 900px) { .dashboard { grid-template-columns: 1fr; } }
@@ -142,22 +159,15 @@
         <div class="date-badge">{{ sim_date }}</div>
     </div>
     <div class="header-actions">
-        <a href="/archive" class="btn btn-secondary" style="text-decoration:none;display:inline-block;">▤ Archive</a>
+        <a href="/archive" class="btn btn-secondary" style="text-decoration:none;display:inline-block;">Archive</a>
         <form action="/refresh" method="post" style="display:inline">
-            <button class="btn btn-primary" type="submit">↻ Refresh</button>
+            <button class="btn btn-primary" type="submit">Refresh</button>
         </form>
         <form action="/retrain" method="post" style="display:inline">
-            <button class="btn btn-secondary" type="submit">⚙ Retrain</button>
+            <button class="btn btn-secondary" type="submit">Retrain</button>
         </form>
     </div>
 </header>
-
-{% if has_picks %}
-<div class="picks-panel">
-    <div class="picks-title">🎯 Picks of the Day <span class="picks-sub">where the model disagrees with the market</span></div>
-    <div class="picks-body" id="picks-box"><span class="picks-loading">⏳ Analyzing today's edges…</span></div>
-</div>
-{% endif %}
 
 <div class="dashboard">
 
@@ -238,13 +248,19 @@
                 {% if r.market %}
                 <tr class="row-espn" title="Average sportsbook line ({{ r.market.n_books }} book{{ 's' if r.market.n_books != 1 }})">
                     <td class="odds-team">ESPN</td>
-                    <td>±1.5</td>
-                    <td>{{ r.market.total }}</td>
+                    <td>±1.5 {{ r.market.runline_odds }}</td>
+                    <td>{{ r.market.total }} {{ r.market.total_over }}/{{ r.market.total_under }}</td>
                     <td>{{ r.away_abbr }} {{ r.market.ml_away }} · {{ r.home_abbr }} {{ r.market.ml_home }}</td>
+                </tr>
+                <tr class="row-edge" title="Model edge = model probability − market implied probability, on the side the model favors">
+                    <td class="odds-team">Edge</td>
+                    <td>{% if r.market.edge_rl_pct is not none %}{{ r.market.edge_rl_side }} +{{ r.market.edge_rl_pct }}%{% else %}—{% endif %}</td>
+                    <td>{% if r.market.edge_total_pct is not none %}{{ r.market.edge_total_side }} +{{ r.market.edge_total_pct }}%{% else %}—{% endif %}</td>
+                    <td>{{ r.market.edge_ml_side }} +{{ r.market.edge_ml_pct }}%</td>
                 </tr>
                 {% endif %}
             </table>
-            <div class="odds-legend"><span class="okey okey-model">Model</span>{% if r.market %}<span class="okey okey-espn">ESPN avg</span>{% endif %}</div>
+            <div class="odds-legend"><span class="okey okey-model">Model</span>{% if r.market %}<span class="okey okey-espn">ESPN avg</span><span class="okey okey-edge">Edge</span>{% endif %}</div>
         </div>
         {% endif %}
 
@@ -298,7 +314,12 @@
             <div class="subsection-label" style="margin-top:10px;">Score Probability — Likelihood of Each Final Run Total Across Simulations</div>
             <div class="chart-container"><canvas id="chart-{{ r.game_id }}"></canvas></div>
 
-            <div class="explain-box" id="explain-{{ r.game_id }}"><span class="explain-queued">⏳ In queue for analysis…</span></div>
+            <div class="ai-head">
+                <span class="subsection-label" style="margin:0;">AI Analysis</span>
+                <button class="discuss-btn" type="button"
+                        onclick="discussGame({{ r.game_id }}, '{{ r.away_abbr }} @ {{ r.home_abbr }}')">Discuss</button>
+            </div>
+            <div class="explain-box" id="explain-{{ r.game_id }}"><span class="explain-queued">In queue for analysis…</span></div>
 
             {% if r.lineup and (r.lineup.get('home') or r.lineup.get('away')) %}
             <div class="subsection-label" style="margin-top:10px;">Lineup</div>
@@ -363,7 +384,7 @@
                         <div style="font-size:12px;font-weight:700;" title="Most common simulated final score">{{ g.modal_away_score | default(g.median_away_score | round | int) }}–{{ g.modal_home_score | default(g.median_home_score | round | int) }}</div>
                         <div class="sub-text" title="Home team win probability">{{ g.home_win_pct }}% home win</div>
                     </td>
-                    <td>{% if g.winner_correct %}<span class="badge correct">✓</span>{% else %}<span class="badge wrong">✗</span>{% endif %}</td>
+                    <td>{% if g.winner_correct %}<span class="badge correct">Hit</span>{% else %}<span class="badge wrong">Miss</span>{% endif %}</td>
                     <td>{% set err = (g.home_score_err + g.away_score_err) / 2 %}<span class="{% if err <= 1.0 %}err-low{% elif err <= 2.5 %}err-mid{% else %}err-high{% endif %}">±{{ "%.1f"|format(err) }}</span></td>
                 </tr>
                 {% endif %}
@@ -462,7 +483,6 @@ document.addEventListener('DOMContentLoaded', function () {
             d.home, d.away, d.labels, d.homeName, d.awayName, d.homeColor, d.awayColor, d.nSims);
     });
 
-    {% if has_picks %}streamPicks();{% endif %}
 
     const _autoGameIds = [{% for r in results %}{% if not r.get('error') %}{{ r.game_id }},{% endif %}{% endfor %}];
     autoExplainAll(_autoGameIds);
@@ -482,7 +502,7 @@ function streamExplanation(gameId, onDone) {
     const box = document.getElementById('explain-' + gameId);
     if (!box) { if (onDone) onDone(); return; }
 
-    box.innerHTML = '<span class="explain-queued">⏳ Generating analysis…</span>';
+    box.innerHTML = '<span class="explain-queued">Generating analysis…</span>';
     let hasText = false;
 
     const evtSource = new EventSource('/explain/' + gameId);
@@ -495,7 +515,7 @@ function streamExplanation(gameId, onDone) {
         try {
             const chunk = JSON.parse(e.data);
             if (chunk.error) {
-                box.textContent = '⚠ ' + chunk.error;
+                box.textContent = chunk.error;
                 evtSource.close();
                 if (onDone) onDone();
             } else if (chunk.text) {
@@ -506,30 +526,8 @@ function streamExplanation(gameId, onDone) {
     };
     evtSource.onerror = function () {
         evtSource.close();
-        if (!hasText) box.textContent = '⚠ Could not reach Ollama — make sure it is running.';
+        if (!hasText) box.textContent = 'Could not reach Ollama — make sure it is running.';
         if (onDone) onDone();
-    };
-}
-
-function streamPicks() {
-    const box = document.getElementById('picks-box');
-    if (!box) return;
-    let hasText = false;
-    const es = new EventSource('/picks');
-    es.onmessage = function (e) {
-        if (e.data === '[DONE]') { es.close(); return; }
-        try {
-            const chunk = JSON.parse(e.data);
-            if (chunk.error) { es.close(); }
-            else if (chunk.text) {
-                if (!hasText) { box.textContent = ''; hasText = true; }
-                box.textContent += chunk.text;
-            }
-        } catch (_) {}
-    };
-    es.onerror = function () {
-        es.close();
-        if (!hasText) box.innerHTML = '<span class="picks-loading">⚠ Could not reach Ollama — start it to get daily picks.</span>';
     };
 }
 
@@ -540,6 +538,107 @@ async function autoExplainAll(gameIds) {
         });
     }
 }
+
+/* ── Chat assistant ── */
+let chatMessages = [];
+let chatFocusGame = null;
+let chatBusy = false;
+
+function toggleChat(show) {
+    const panel = document.getElementById('chat-panel');
+    const fab = document.getElementById('chat-fab');
+    const open = (show === undefined) ? (panel.style.display === 'none') : show;
+    panel.style.display = open ? 'flex' : 'none';
+    fab.style.display = open ? 'none' : 'block';
+    if (open) { renderChat(); document.getElementById('chat-text').focus(); }
+}
+
+function clearFocus() {
+    chatFocusGame = null;
+    document.getElementById('chat-focus').style.display = 'none';
+}
+
+function discussGame(gameId, label) {
+    chatFocusGame = { id: gameId, label: label };
+    const fb = document.getElementById('chat-focus');
+    fb.style.display = 'flex';
+    fb.querySelector('.chat-focus-label').textContent = label;
+    toggleChat(true);
+    chatSend('Give me a quick rundown of this game and the biggest edge the model sees vs the market.');
+}
+
+function renderChat() {
+    const box = document.getElementById('chat-msgs');
+    if (!chatMessages.length) {
+        box.innerHTML = '<div class="chat-empty">Ask me about today\'s games, the betting edges vs ESPN, recent accuracy, or how the model works. Or hit <b>Discuss</b> on any game.</div>';
+        return;
+    }
+    box.innerHTML = '';
+    for (const m of chatMessages) {
+        const d = document.createElement('div');
+        d.className = 'chat-msg ' + (m.role === 'user' ? 'chat-user' : 'chat-bot');
+        d.textContent = m.content || '…';
+        box.appendChild(d);
+    }
+    box.scrollTop = box.scrollHeight;
+}
+
+function chatSubmit(e) {
+    e.preventDefault();
+    const inp = document.getElementById('chat-text');
+    const text = inp.value.trim();
+    if (text && !chatBusy) { inp.value = ''; chatSend(text); }
+    return false;
+}
+
+async function chatSend(text) {
+    if (chatBusy) return;
+    chatBusy = true;
+    chatMessages.push({ role: 'user', content: text });
+    const bot = { role: 'assistant', content: '' };
+    chatMessages.push(bot);
+    renderChat();
+    try {
+        const resp = await fetch('/chat', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                messages: chatMessages.slice(0, -1),
+                game_id: chatFocusGame ? chatFocusGame.id : null,
+            }),
+        });
+        const reader = resp.body.getReader();
+        const dec = new TextDecoder();
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            bot.content += dec.decode(value, { stream: true });
+            renderChat();
+        }
+        if (!bot.content) { bot.content = 'No response — is Ollama running?'; renderChat(); }
+    } catch (err) {
+        bot.content = 'Error: ' + err; renderChat();
+    } finally {
+        chatBusy = false;
+    }
+}
 </script>
+
+<button id="chat-fab" onclick="toggleChat()" title="Ask the assistant">Ask</button>
+<div id="chat-panel" class="chat-panel" style="display:none">
+    <div class="chat-head">
+        <span>Dashboard Assistant</span>
+        <button class="chat-x" onclick="toggleChat(false)" title="Close">×</button>
+    </div>
+    <div id="chat-focus" class="chat-focus" style="display:none">
+        <span class="chat-focus-label"></span>
+        <button class="chat-clear" onclick="clearFocus()">clear</button>
+    </div>
+    <div id="chat-msgs" class="chat-msgs"></div>
+    <form class="chat-input" onsubmit="return chatSubmit(event)">
+        <input id="chat-text" type="text" autocomplete="off"
+               placeholder="Ask about today's games, the model, history…">
+        <button type="submit">Send</button>
+    </form>
+</div>
 </body>
 </html>

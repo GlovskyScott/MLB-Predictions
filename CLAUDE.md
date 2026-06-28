@@ -41,7 +41,7 @@ Request → prediction → render flow:
 GET /  ──► run_daily_simulation(today)
              ├─ get_prediction(today)            # read frozen core, or simulate-once-and-freeze
              │    └─ _simulate_core_for_date()    # build_game_features → predict_game → simulate_game
-             └─ _enrich_game()                    # add weather, lineup, logos, colors (NOT persisted)
+             └─ _enrich_game()                    # _calibrate_core (win%) + weather, lineup, logos, colors (NOT persisted)
         ──► compare_date(yesterday)               # join frozen prediction + live finals (no sim)
         ──► _aggregate_days(7|90)                 # rollup accuracy over stored dates
 
@@ -63,6 +63,7 @@ GET /archive ──► _version_summary(v) for each registered version  (join st
 | `fetcher.py` | All external data + disk caches | `bootstrap_{model,data,predictions}_cache`, `get_schedule`, `get_season_schedule`, `refresh_schedule_date`, `get_*_stats`, `get_weather_*`, splits/handedness/rest/recent-runs/bullpen helpers |
 | `model.py` | XGBoost train/load/predict | `train_models`, `load_models`, `predict_game`, `train_inning_model`, `predict_inning_probs`, `models_exist` |
 | `simulator.py` | Poisson Monte Carlo | `simulate_game(prediction, n_simulations, seed)` |
+| `calibration.py` | Win% calibration (Platt/temperature) | `fit`, `load`, `save`, `calibrate_pct`, `PlattCalibrator` |
 | `stadiums.py` | Park/elevation/roof, wind | `get_stadium`, `classify_wind` |
 | `teams.py` | Colors/logos/abbrs | `get_team_meta` |
 
@@ -92,6 +93,19 @@ predictions/
 
 ---
 
+## Win-probability calibration
+
+The displayed win% is the Monte-Carlo output of the run regressors (`simulate_game` -> `home_win_pct`). On unseen games that raw number is **overconfident** — walk-forward, a simulated "72%" wins ~61% (slope ≈ 0.48). Against an efficient sportsbook line that gap fabricates large, fake moneyline "edges".
+
+`src/calibration.py` corrects it at **serve time**: a temperature-scaling map `calibrated = sigmoid(a·logit(p))` fit on walk-forward (out-of-sample) pairs. Key properties — **don't break them**:
+
+- **Serve-time only.** Applied in `_calibrate_core` (called by `_enrich_game` and `compare_date`). The stored prediction core on disk is **never** rewritten, so it's *not* a model/version change — no fork, no re-sim, and the `prediction-archive` stays byte-identical.
+- **Pick-preserving.** Fit with **no intercept** (`b == 0`), so the curve passes exactly through 0.5 and is monotonic. It only rescales confidence; it never flips the favored side, so `winner_correct` (`home_win_pct > 50`) and every graded accuracy number are unchanged. (A fitted intercept would pick up a small home-field bias but flip near-coinflip picks — deliberately dropped.)
+- **Optional.** `_get_calibrator()` returns `None` when `data/model_calibrator.pkl` is absent → identity → uncalibrated (raw) win%. Tests that patch `_DATA_DIR` to a `tmp_path` get the identity automatically.
+- **Rebuild after a retrain:** `python -m scripts.build_calibrator` (walk-forward; ~1–2 min). It builds **both** calibrators — `model_calibrator.pkl` (win%) and `model_inning_calibrator.pkl` (per-inning P(score≥1)). Both are model artifacts in the `latest` release (restored best-effort by `bootstrap_model_cache`), **not** in `_MODEL_PKLS` and **not** in the version hash.
+- **Inning calibration:** `_calibrate_core` also calibrates `home/away_innings_scoring_pct` (the "either" row is derived from them in the template). Empirically the inning classifier is *already* well-calibrated (walk-forward slope ≈ 0.97), so this map is near-identity — applied for consistency/robustness, but it barely moves the numbers. The win% map, by contrast, is a hard shrink (slope ≈ 0.48).
+- **Scope:** the moneyline/win% and the per-inning scoring %s are calibrated. The run-line and total edges still derive from the raw score distribution — calibrating those is a separate follow-up.
+
 ## Conventions & gotchas
 
 - **Never commit `data/`.** It's git-ignored and lives in releases. Prediction data goes in the `prediction-archive` release via `scripts/upload_predictions_release.sh`.
@@ -109,7 +123,7 @@ predictions/
 ## Common tasks
 
 - **Add a game feature:** edit `FEATURE_COLUMNS` and `build_game_features` in `features.py`, **bump `FEATURE_VERSION`**, retrain. The version mismatch triggers an auto-retrain; the new model registers as `v<new>.0`.
-- **Retrain:** `POST /retrain` (or click ⚙ Retrain). After it forks a version, publish with `bash scripts/upload_predictions_release.sh`.
+- **Retrain:** `POST /retrain` (or click Retrain). After it forks a version, publish with `bash scripts/upload_predictions_release.sh`.
 - **Reconstruct a legacy model into the archive:** see the README "Legacy models" section — generate in a git worktree at the model's commit with `scripts/import_legacy_predictions.py`, then `scripts/register_legacy_version.py --major <N>`.
 - **Publish releases:** `scripts/upload_data_release.sh` (data cache), `scripts/upload_predictions_release.sh` (prediction archive). Both use `gh`.
 

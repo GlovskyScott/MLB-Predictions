@@ -48,7 +48,7 @@
     {% else %}
     <table>
         <thead>
-            <tr><th>Away</th><th>Home</th><th>Actual</th><th>Predicted</th><th>Win%</th><th>Err</th><th>✓</th></tr>
+            <tr><th>Away</th><th>Home</th><th>Actual</th><th>Predicted</th><th>Win%</th><th>Err</th><th>Result</th></tr>
         </thead>
         <tbody>
         {% for day in summary.daily %}
@@ -61,7 +61,7 @@
                 <td class="muted">{{ g.predicted_score }}</td>
                 <td>{{ g.home_win_pct }}%</td>
                 <td>±{{ ((g.home_score_err + g.away_score_err) / 2) | round(1) }}</td>
-                <td class="{{ 'ok' if g.winner_correct else 'no' }}">{{ '✓' if g.winner_correct else '✗' }}</td>
+                <td class="{{ 'ok' if g.winner_correct else 'no' }}">{{ 'Hit' if g.winner_correct else 'Miss' }}</td>
             </tr>
             {% endfor %}
         {% endfor %}

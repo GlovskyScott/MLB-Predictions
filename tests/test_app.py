@@ -176,6 +176,7 @@ def test_get_prediction_generates_and_persists_on_miss(tmp_path, mocker):
 def test_run_daily_simulation_enriches_stored_core(mocker):
     import src.app as app
     mocker.patch('src.app.get_market_odds', return_value={})  # no live ESPN call
+    mocker.patch('src.app._get_calibrator', return_value=None)  # identity: test enrichment only
     mocker.patch('src.app.get_prediction', return_value=[{
         'game_id': 7, 'game_date': '2026-06-26', 'home_id': 147, 'away_id': 111,
         'home_name': 'NYY', 'away_name': 'BOS', 'home_win_pct': 60.0, 'away_win_pct': 40.0,
@@ -366,38 +367,52 @@ def test_market_lines_blank_without_distribution():
     assert L['ml_home'] == '-122' and L['spread_home'] == '—' and L['total_line'] == '—'
 
 
-def test_market_compare_flags_edges():
+def test_market_block_edges_and_default_odds():
     import src.app as app
+    # model: home runs {4:.5,5:.5}, away {3:.5,4:.5}; home_win 55%
     game = {'home_win_pct': 55.0, 'away_win_pct': 45.0, 'home_abbr': 'BOS', 'away_abbr': 'NYY',
-            'lines': {'total_line': '9.5'}}
-    mk = {'total': 8.0, 'over_odds': -110, 'under_odds': -110,
+            'score_distribution': {'labels': [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+                                   'home': [0, 0, 0, 0, 50, 50, 0, 0, 0, 0],
+                                   'away': [0, 0, 0, 50, 50, 0, 0, 0, 0, 0]}}
+    mk = {'total': 7.5, 'over_odds': None, 'under_odds': None,   # missing -> default -110
           'ml_home': 130, 'ml_away': -150, 'n_books': 2}
-    c = app._market_compare(game, mk)
-    assert c['total'] == '8.0' and c['ml_home'] == '+130' and c['ml_away'] == '-150'
-    assert 'OVER 1.5' in c['total_edge']          # model 9.5 vs market 8.0
-    assert c['ml_edge'] == 'model likes BOS'      # market favors NYY, model favors BOS
+    b = app._market_block(game, mk)
+    # run line + total prices default to -110 when the book doesn't list them
+    assert b['runline_odds'] == '-110'
+    assert b['total_over'] == '-110' and b['total_under'] == '-110'
+    assert b['total'] == '7.5' and b['ml_home'] == '+130' and b['ml_away'] == '-150'
+    # edges (model prob - market implied), shown on the side the model favors
+    assert b['edge_ml_side'] == 'BOS' and b['edge_ml_pct'] == 13     # model 55% vs ~42%
+    assert b['edge_total_side'] == 'Over' and b['edge_total_pct'] == 25  # model O 75% vs 50%
+    assert b['edge_rl_side'] == 'NYY +1.5' and b['edge_rl_pct'] == 25   # fav covers 25% vs 50%
 
 
-def test_edge_metrics_and_picks_ranking():
+def test_chat_context_includes_games_and_model(mocker):
     import src.app as app
-    g1 = {'home_abbr': 'BOS', 'away_abbr': 'NYY', 'home_win_pct': 55.0, 'away_win_pct': 45.0,
-          'lines': {'total_line': '9.5'}}
-    mk1 = {'total': 8.0, 'ml_home': 130, 'ml_away': -150}
-    e1 = app._edge_metrics(g1, mk1)
-    assert abs(e1['total_diff'] - 1.5) < 1e-9 and e1['fav_disagree'] is True and e1['score'] > 1.5
-    # a game with no disagreement scores lower
-    g2 = {'home_abbr': 'LAD', 'away_abbr': 'SF', 'home_win_pct': 58.0, 'away_win_pct': 42.0,
-          'lines': {'total_line': '8.0'}}
-    mk2 = {'total': 8.0, 'ml_home': -160, 'ml_away': 140}
-    e2 = app._edge_metrics(g2, mk2)
-    games = [{'edge': e1}, {'edge': e2}, {'edge': None}]
-    picks = app._picks_payload(games)
-    assert picks[0] is e1 and len(picks) == 2     # ranked, None dropped
+    mocker.patch.object(app, '_simulation_cache', [{
+        'game_id': 7, 'away_abbr': 'NYY', 'home_abbr': 'BOS',
+        'away_name': 'New York Yankees', 'home_name': 'Boston Red Sox',
+        'away_win_pct': 45.0, 'home_win_pct': 55.0, 'modal_away_score': 3, 'modal_home_score': 5,
+        'away_pitcher': 'Cole', 'home_pitcher': 'Bello',
+        'lines': {'total_line': '9.5', 'ml_away': '+120', 'ml_home': '-130'},
+        'market': {'total': 8.5, 'ml_away': '+130', 'ml_home': '-150',
+                   'edge_ml_side': 'BOS', 'edge_ml_pct': 6, 'edge_total_side': 'Over',
+                   'edge_total_pct': 5, 'edge_rl_side': 'NYY +1.5', 'edge_rl_pct': 4},
+    }])
+    mocker.patch.object(app, '_aggregate_days', return_value={
+        'winner_accuracy': 60.0, 'total_games': 100, 'avg_score_err': 2.1})
+    ctx = app._build_chat_context(focus_game_id=7)
+    assert 'NYY @ BOS' in ctx and 'model win%' in ctx
+    assert 'edges' in ctx and 'BOS +6%' in ctx
+    assert 'HISTORICAL ACCURACY' in ctx and 'MODEL:' in ctx
+    assert 'FOCUS GAME' in ctx and 'Boston Red Sox' in ctx
 
 
-def test_build_picks_prompt_lists_games():
-    from src.explanations import _build_picks_prompt
-    p = _build_picks_prompt([{'away_abbr': 'NYY', 'home_abbr': 'BOS', 'model_total': 9.5,
-                              'mkt_total': 8.0, 'total_diff': 1.5, 'model_home_win': 55.0,
-                              'model_fav': 'BOS', 'mkt_fav': 'NYY', 'fav_disagree': True}])
-    assert 'NYY @ BOS' in p and 'Picks of the Day' in p and 'OVER' in p
+def test_chat_route_streams(client, mocker):
+    import src.app as app
+    mocker.patch.object(app, '_build_chat_context', return_value='ctx')
+    mocker.patch('src.app.stream_chat', return_value=iter(['Hello', ' there']))
+    r = client.post('/chat', json={'messages': [{'role': 'user', 'content': 'hi'}]})
+    assert r.status_code == 200 and r.get_data(as_text=True) == 'Hello there'
+    # empty conversation rejected
+    assert client.post('/chat', json={'messages': []}).status_code == 400
