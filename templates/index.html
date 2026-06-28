@@ -248,8 +248,8 @@
     <div class="games-toolbar">
         <input type="search" id="team-search" placeholder="Search team…" aria-label="Search team">
         <select id="sort-select" aria-label="Sort games">
-            <option value="edge">Sort: Best edge</option>
             <option value="time">Sort: First pitch</option>
+            <option value="edge">Sort: Best edge</option>
             <option value="confidence">Sort: Win confidence</option>
             <option value="matchup">Sort: Matchup A–Z</option>
         </select>
@@ -673,9 +673,16 @@ document.addEventListener('DOMContentLoaded', function () {
         } catch (e) {}
     });
 
+    // One-time migration: the old default was 'edge'; drop a stale saved value
+    // so the new 'first pitch' default takes effect for everyone.
+    if (localStorage.getItem('ui.sortDefault') !== 'time') {
+        localStorage.removeItem('ui.sort');
+        localStorage.setItem('ui.sortDefault', 'time');
+    }
+
     const sortSel = document.getElementById('sort-select');
     if (sortSel) {
-        sortSel.value = localStorage.getItem('ui.sort') || 'edge';
+        sortSel.value = localStorage.getItem('ui.sort') || 'time';
         document.getElementById('filter-select').value = localStorage.getItem('ui.filter') || 'all';
         document.getElementById('team-search').value = localStorage.getItem('ui.search') || '';
         sortSel.addEventListener('change', applySortFilter);

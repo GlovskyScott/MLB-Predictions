@@ -404,6 +404,9 @@ def run_daily_simulation(sim_date: str = None) -> list[dict]:
         except Exception as e:
             results.append({**game, 'error': str(e)})
 
+    # Chronological by first pitch (the default the UI shows); missing times last.
+    results.sort(key=lambda g: g.get('game_datetime') or '~')
+
     return results
 
 
