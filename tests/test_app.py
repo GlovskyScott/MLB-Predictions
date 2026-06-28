@@ -57,6 +57,7 @@ MOCK_RESULTS_DATA = {
         'home_score_err': 1.0,
         'away_score_err': 0.5,
         'winner_correct': True,
+        'ml_correct': True, 'ml_pick': 'NYY',
     }],
 }
 
@@ -110,6 +111,16 @@ def test_index_renders_inning_distribution_bars(client, mocker):
     response = client.get('/')
     assert b'inn-bar' in response.data        # 3-class stacked bars rendered
     assert b'Both' in response.data           # combined (any team scores) row
+
+
+def test_results_row_shows_ml_pick_only(client, mocker):
+    mocker.patch('src.app.run_daily_simulation', return_value=[MOCK_SIM_RESULT])
+    mocker.patch('src.app._get_results_for_date', return_value=MOCK_RESULTS_DATA)
+    mocker.patch('src.app._aggregate_days', return_value=MOCK_AGGREGATE)
+    html = client.get('/').data.decode()
+    assert '>ML<' in html and 'NYY' in html   # ML pick shown for the previous prediction
+    # run-line / total markets were removed entirely
+    assert '>RL<' not in html and '>Tot<' not in html and '-1.5' not in html
 
 
 def test_refresh_redirects(client, mocker):

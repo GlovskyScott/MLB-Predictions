@@ -507,6 +507,8 @@ def compare_date(result_date: str, version: str = None) -> dict:
             correct += 1
         home_meta = get_team_meta(game['home_id'])
         away_meta = get_team_meta(game['away_id'])
+        # ML is the only graded market; its pick label is the favored side.
+        ml_pick = home_meta.get('abbr', 'HOME') if predicted_home_won else away_meta.get('abbr', 'AWAY')
         results.append({
             **game,
             **core,
@@ -519,6 +521,7 @@ def compare_date(result_date: str, version: str = None) -> dict:
             'winner_correct': winner_correct,
             # ML is the only graded market; its pick is the winner pick.
             'ml_correct': winner_correct,
+            'ml_pick': ml_pick,
             'home_logo': home_meta['logo_url'],
             'away_logo': away_meta['logo_url'],
             'home_color': home_meta['primary'],
