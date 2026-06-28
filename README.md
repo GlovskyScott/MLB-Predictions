@@ -61,8 +61,11 @@ A separate XGBoost classifier predicts P(team scores ≥ 1 run) for each of the 
 ```
 MLB-Predictions/
 ├── src/
-│   ├── app.py          # Flask app: routes, get_prediction/compare_date, backfill, retrain, AI explanations
+│   ├── app.py          # Flask app: routes, get_prediction/compare_date, backfill
 │   ├── predictions.py  # Versioned prediction store: model_version(), registry, load/save, next_build()
+│   ├── training.py     # Model training orchestration + model caches (get_models, needs_retrain, …)
+│   ├── explanations.py # Ollama AI explanations (prompt, SSE stream, pre-generator)
+│   ├── colors.py       # Team-color helpers for the dark UI
 │   ├── features.py     # Feature engineering: build_game_features(), FEATURE_COLUMNS, FEATURE_VERSION
 │   ├── fetcher.py      # All external data + caches: MLB Stats API, pybaseball, Open-Meteo, bootstrap_*()
 │   ├── model.py        # Train / load / predict for the XGBoost models
