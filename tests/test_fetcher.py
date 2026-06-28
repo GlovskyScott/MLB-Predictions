@@ -298,3 +298,8 @@ def test_devig_home_prob_one_sided_uses_20cent_line():
     p2 = devig_home_prob(None, -150)
     assert 0.40 < p2 < 0.45
     assert p + p2 == _pytest.approx(1.0, abs=1e-6)   # mirror of each other
+
+
+def test_blender_in_calibrator_assets():
+    from src import fetcher
+    assert 'model_market_blender.pkl' in fetcher._CALIBRATOR_ASSETS
