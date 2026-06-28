@@ -24,7 +24,7 @@
   <div class="app-scroll" style="width:100%;max-width:540px;min-height:100vh;background:#0b0d11;border-left:1px solid #15181f;border-right:1px solid #15181f;display:flex;flex-direction:column;">
 
     <!-- HEADER -->
-    <div style="position:sticky;top:0;z-index:20;background:rgba(11,13,17,.86);backdrop-filter:blur(12px);border-bottom:1px solid #161a22;">
+    <div id="appHeader" style="position:sticky;top:0;z-index:20;background:rgba(11,13,17,.86);backdrop-filter:blur(12px);border-bottom:1px solid #161a22;">
       <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 18px 0;">
         <div style="display:flex;align-items:baseline;gap:9px;">
           <span style="font:800 18px system-ui;color:#f1f3f6;letter-spacing:-.3px;">MLB Predictions</span>
@@ -80,6 +80,9 @@ function sortedGames() {
 function renderHeader() {
   document.getElementById('dateLabel').textContent = DATA.dateLabel || '';
   const tabsEl = document.getElementById('tabs');
+  // In the game drill-down the tabs are hidden, so drop the header's bottom
+  // border — otherwise it reads as a stray line under the title.
+  document.getElementById('appHeader').style.borderBottom = state.openId !== null ? 'none' : '1px solid #161a22';
   if (state.openId !== null) { tabsEl.innerHTML = ''; return; }
   const tab = (key, label) => {
     const on = state.tab === key;
