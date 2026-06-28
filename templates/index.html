@@ -342,8 +342,8 @@ function openGame(id) {
   render();
   const g = gameById(id);
   // Ollama serves one generation at a time on a single-threaded dev server, so
-  // fetch the short edge angle first, then start the longer AI-read stream.
-  if (g && g.hasEdge) fetchEdge(id).finally(() => streamExplanation(id));
+  // stream the short edge angle first, then start the longer AI-read stream.
+  if (g && g.hasEdge) streamEdge(id, () => streamExplanation(id));
   else streamExplanation(id);
 }
 function wireDetail() {
@@ -357,19 +357,28 @@ function wireDetail() {
 /* ---------- AI edge angle (/edge) ---------- */
 // Short (<=12 word) AI angle for "The bet". Buffered per game so it survives
 // in-place re-renders; falls back to the deterministic consensus line if empty.
-const edgeText = {};   // gameId -> summary (undefined = not fetched, '' = none)
+const edgeText = {};   // gameId -> summary (undefined = not started, '' = none yet)
 function setEdge(id) {
   const el = document.getElementById('edgeSub-' + id);
   if (el && edgeText[id]) el.textContent = edgeText[id];
 }
-async function fetchEdge(id) {
-  if (edgeText[id] !== undefined) { setEdge(id); return; }
-  edgeText[id] = '';   // mark fetched; keep fallback visible meanwhile
-  try {
-    const r = await fetch('/edge/' + id);
-    const j = await r.json();
-    if (j.text) { edgeText[id] = j.text; setEdge(id); }
-  } catch (_) {}
+// Stream the edge angle so it types in as Ollama generates it. The fallback
+// consensus line stays until the first token arrives (and if Ollama is down).
+function streamEdge(id, onDone) {
+  const done = onDone || (() => {});
+  if (edgeText[id] !== undefined) { setEdge(id); done(); return; }
+  edgeText[id] = '';
+  let text = '';
+  const es = new EventSource('/edge/' + id);
+  es.onmessage = e => {
+    if (e.data === '[DONE]') { es.close(); done(); return; }
+    try {
+      const c = JSON.parse(e.data);
+      if (c.error) { es.close(); done(); }
+      else if (c.text) { text += c.text; edgeText[id] = text; setEdge(id); }
+    } catch (_) {}
+  };
+  es.onerror = () => { es.close(); done(); };
 }
 
 /* ---------- AI read (SSE /explain) ---------- */

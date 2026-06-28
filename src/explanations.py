@@ -154,34 +154,52 @@ def _build_edge_prompt(game: dict) -> str:
     return (
         f"You are a sharp MLB betting analyst. The model likes {pick} over {opp} "
         f"(+{mk.get('edge_ml_pct', 0)}% edge vs the market), behind {pick_p}.\n"
-        f"In ONE sentence, 12 words MAX, give the bettor the KEY ANGLE for taking "
+        f"In ONE sentence, 10 words MAX, give the bettor the KEY ANGLE for taking "
         f"{pick}. Do NOT restate the win %, the odds, or the projected score — only "
         f"the reasoning. Plain text, no quotes, no period needed.\nAngle:"
     )
 
 
-def _generate_edge_summary_sync(game: dict) -> str:
-    """One short edge-angle sentence from Ollama (non-streaming). Cached by id."""
-    gid = game.get('game_id')
-    if gid in _edge_summary_cache:
-        return _edge_summary_cache[gid]
+_EDGE_WORD_CAP = 10
+
+
+def _stream_edge_summary(game: dict, game_id: int = None):
+    """Stream the edge angle from Ollama as SSE deltas so it types in as it
+    generates. Cleans punctuation on the fly and hard-caps at 10 words; caches
+    the final text. Yields {'error': ...} on failure so the client keeps its
+    deterministic fallback line."""
+    sent = ''  # cleaned text already emitted to the client
     try:
         resp = _requests.post(
             _OLLAMA_URL,
             json={'model': _OLLAMA_MODEL, 'prompt': _build_edge_prompt(game),
-                  'stream': False, 'options': {'num_predict': 40, 'temperature': 0.6}},
-            timeout=60,
+                  'stream': True, 'options': {'num_predict': 40, 'temperature': 0.6}},
+            stream=True, timeout=60,
         )
-        text = resp.json().get('response', '').strip()
-    except Exception:
-        text = ''
-    # Keep it to one sentence, trim trailing punctuation, hard-cap at 12 words.
-    text = text.replace('\n', ' ').strip().strip('"').split('. ')[0].rstrip('.')
-    if len(text.split()) > 12:
-        text = ' '.join(text.split()[:12])
-    if text and gid is not None:
-        _edge_summary_cache[gid] = text
-    return text
+        acc = ''
+        for raw in resp.iter_lines():
+            if not raw:
+                continue
+            chunk = json.loads(raw)
+            acc += chunk.get('response', '')
+            done = bool(chunk.get('done'))
+            cleaned = acc.replace('\n', ' ').strip().lstrip('"')
+            words = cleaned.split()
+            if len(words) > _EDGE_WORD_CAP:
+                cleaned = ' '.join(words[:_EDGE_WORD_CAP])
+                done = True
+            delta = cleaned[len(sent):]
+            if delta:
+                sent = cleaned
+                yield f"data: {json.dumps({'text': delta})}\n\n"
+            if done:
+                final = sent.rstrip(' .,;:')
+                if game_id is not None and final:
+                    _edge_summary_cache[game_id] = final
+                yield "data: [DONE]\n\n"
+                return
+    except Exception as exc:
+        yield f"data: {json.dumps({'error': str(exc)})}\n\n"
 
 
 def _pregenerate_explanations(games: list, game_date: str) -> None:
