@@ -194,3 +194,49 @@ def test_run_daily_simulation_enriches_stored_core(mocker):
     assert g['home_win_pct'] == 60.0          # from frozen core
     assert g['home_logo'] == 'L'              # enrichment
     assert g['weather']['is_dome'] is False   # enrichment
+
+
+def test_compare_date_joins_without_resim(tmp_path, mocker):
+    import src.app as app
+    from src import predictions as P
+    mocker.patch.object(app, '_DATA_DIR', tmp_path)
+    mocker.patch.object(app, '_current_version', return_value='v1')
+    P.save_prediction(tmp_path, 'v1', '2026-06-26', [{
+        'game_id': 1, 'game_date': '2026-06-26', 'home_id': 147, 'away_id': 111,
+        'home_name': 'NYY', 'away_name': 'BOS', 'home_win_pct': 60.0, 'away_win_pct': 40.0,
+        'median_home_score': 5.0, 'median_away_score': 3.0, 'predicted_score': '5-3'}])
+    mocker.patch('src.app.get_season_schedule', return_value=[{
+        'game_id': 1, 'game_date': '2026-06-26', 'status': 'Final',
+        'home_score': 6, 'away_score': 2, 'home_id': 147, 'away_id': 111}])
+    mocker.patch('src.app.refresh_schedule_date', return_value=0)
+    sim = mocker.patch('src.app.simulate_game')
+    mocker.patch('src.app.get_team_meta', return_value={
+        'logo_url': '', 'primary': '#111', 'secondary': '#222', 'abbr': 'X'})
+
+    data = app.compare_date('2026-06-26')
+    assert data['n_completed'] == 1
+    assert data['games'][0]['winner_correct'] is True   # predicted home win, home won
+    assert data['games'][0]['home_score_err'] == 1.0    # |5 - 6|
+    sim.assert_not_called()
+
+
+def test_compare_date_archived_version_no_generate(tmp_path, mocker):
+    import src.app as app
+    from src import predictions as P
+    mocker.patch.object(app, '_DATA_DIR', tmp_path)
+    mocker.patch.object(app, '_current_version', return_value='vCURRENT')
+    # archived version has its own stored prediction
+    P.save_prediction(tmp_path, 'vOLD', '2026-06-26', [{
+        'game_id': 1, 'game_date': '2026-06-26', 'home_id': 147, 'away_id': 111,
+        'home_win_pct': 30.0, 'median_home_score': 2.0, 'median_away_score': 5.0}])
+    mocker.patch('src.app.get_season_schedule', return_value=[{
+        'game_id': 1, 'game_date': '2026-06-26', 'status': 'Final',
+        'home_score': 6, 'away_score': 2, 'home_id': 147, 'away_id': 111}])
+    mocker.patch('src.app.refresh_schedule_date', return_value=0)
+    gp = mocker.patch('src.app.get_prediction')
+    mocker.patch('src.app.get_team_meta', return_value={
+        'logo_url': '', 'primary': '#111', 'secondary': '#222', 'abbr': 'X'})
+
+    data = app.compare_date('2026-06-26', version='vOLD')
+    assert data['games'][0]['winner_correct'] is False  # predicted away (30%<50), home won
+    gp.assert_not_called()  # archived version is frozen — no generate-on-miss
