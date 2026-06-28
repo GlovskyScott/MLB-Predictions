@@ -429,9 +429,9 @@ def _game_chat_line(g: dict) -> str:
     parts = [
         f"{aw} @ {hw} ({g.get('away_name')} at {g.get('home_name')}):",
         f"model win% {aw} {g.get('away_win_pct')}% / {hw} {g.get('home_win_pct')}%,",
-        f"predicted runs {aw} {g.get('predicted_away_runs')} / {hw} {g.get('predicted_home_runs')} "
-        f"(most-likely score {g.get('modal_away_score')}-{g.get('modal_home_score')}, "
-        f"median {g.get('median_away_score')}-{g.get('median_home_score')});",
+        f"projected final score (median) {aw} {g.get('median_away_score')}-"
+        f"{hw} {g.get('median_home_score')}, most-likely "
+        f"{g.get('modal_away_score')}-{g.get('modal_home_score')};",
         f"SP {g.get('away_pitcher')} vs {g.get('home_pitcher')};",
     ]
     venue = g.get('venue_name')
