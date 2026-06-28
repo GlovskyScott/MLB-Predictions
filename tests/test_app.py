@@ -482,3 +482,87 @@ def test_chat_route_streams(client, mocker):
     assert r.status_code == 200 and r.get_data(as_text=True) == 'Hello there'
     # empty conversation rejected
     assert client.post('/chat', json={'messages': []}).status_code == 400
+
+
+# ---- market blend (Consensus moneyline) ------------------------------------
+
+def test_blend_core_replaces_winpct_with_blend(tmp_path, mocker):
+    import src.app as app
+    from src import blend
+    mocker.patch.object(app, '_DATA_DIR', tmp_path)
+    app._blender_cache.clear()
+    blend.save(blend.MarketBlender(a=0.5, b=0.5, c=0.0), tmp_path)
+    core = {'home_win_pct': 80.0, 'away_win_pct': 20.0, 'raw_home_win_pct': 80.0}
+    out = app._blend_core(core, market_home_prob=0.50)
+    assert 50.0 < out['home_win_pct'] < 80.0          # pulled toward market
+    assert out['away_win_pct'] == round(100 - out['home_win_pct'], 1)
+    assert out['model_home_win_pct'] == 80.0          # model-only preserved
+    app._blender_cache.clear()
+
+
+def test_blend_core_falls_back_without_market(tmp_path, mocker):
+    import src.app as app
+    from src import blend
+    mocker.patch.object(app, '_DATA_DIR', tmp_path)
+    app._blender_cache.clear()
+    blend.save(blend.MarketBlender(a=0.5, b=0.5, c=0.0), tmp_path)
+    core = {'home_win_pct': 64.0, 'away_win_pct': 36.0, 'raw_home_win_pct': 64.0}
+    out = app._blend_core(core, market_home_prob=None)
+    assert out['home_win_pct'] == 64.0                # unchanged
+    assert out['model_home_win_pct'] == 64.0
+    app._blender_cache.clear()
+
+
+def test_blend_core_identity_without_blender(tmp_path, mocker):
+    import src.app as app
+    mocker.patch.object(app, '_DATA_DIR', tmp_path)
+    app._blender_cache.clear()                         # no blender file
+    core = {'home_win_pct': 64.0, 'away_win_pct': 36.0, 'raw_home_win_pct': 64.0}
+    out = app._blend_core(core, market_home_prob=0.50)
+    assert out['home_win_pct'] == 64.0
+
+
+def test_compare_date_grades_blended_pick(tmp_path, mocker):
+    import src.app as app
+    from src import predictions as P, blend
+    mocker.patch.object(app, '_DATA_DIR', tmp_path)
+    mocker.patch.object(app, '_current_version', return_value='v1')
+    app._blender_cache.clear(); app._calibrator_cache.clear()
+    # Blender leans hard on the market (a=0, b=3): the market decides the pick.
+    blend.save(blend.MarketBlender(a=0.0, b=3.0, c=0.0), tmp_path)
+    # Model favors HOME (70%); market favors AWAY (home +200 / away -240).
+    P.save_prediction(tmp_path, 'v1', '2026-06-26', [{
+        'game_id': 1, 'game_date': '2026-06-26', 'home_id': 147, 'away_id': 111,
+        'home_win_pct': 70.0, 'away_win_pct': 30.0, 'raw_home_win_pct': 70.0,
+        'median_home_score': 4.0, 'median_away_score': 5.0}])
+    P.save_market_odds(tmp_path, '2026-06-26', {1: {'ml_home': 200, 'ml_away': -240}})
+    mocker.patch('src.app.get_season_schedule', return_value=[{
+        'game_id': 1, 'game_date': '2026-06-26', 'status': 'Final',
+        'home_score': 3, 'away_score': 6, 'home_id': 147, 'away_id': 111}])  # away won
+    mocker.patch('src.app.refresh_schedule_date', return_value=0)
+    sim = mocker.patch('src.app.simulate_game')
+    mocker.patch('src.app.get_team_meta', return_value={
+        'logo_url': '', 'primary': '#111', 'secondary': '#222', 'abbr': 'X'})
+
+    data = app.compare_date('2026-06-26')
+    g = data['games'][0]
+    assert g['winner_correct'] is True          # blended followed market -> AWAY -> correct
+    assert g['model_winner_correct'] is False    # model picked HOME -> wrong
+    assert data['consensus_accuracy'] == 100.0
+    assert data['model_accuracy'] == 0.0
+    sim.assert_not_called()
+    app._blender_cache.clear()
+
+
+def test_index_headline_is_consensus(client, mocker):
+    sim = dict(MOCK_SIM_RESULT)
+    sim['home_win_pct'] = 58.0; sim['away_win_pct'] = 42.0
+    sim['model_home_win_pct'] = 64.0   # model-only, must NOT be surfaced
+    mocker.patch('src.app.run_daily_simulation', return_value=[sim])
+    mocker.patch('src.app._get_results_for_date', return_value=MOCK_RESULTS_DATA)
+    mocker.patch('src.app._aggregate_days', return_value={
+        'winner_accuracy': 58.0, 'consensus_accuracy': 58.0, 'model_accuracy': 55.0,
+        'total_games': 100, 'avg_score_err': 2.1, 'daily': []})
+    html = client.get('/').data.decode()
+    assert 'Consensus' in html
+    assert '>64<' not in html   # model-only number not surfaced as a standalone value

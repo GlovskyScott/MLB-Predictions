@@ -269,3 +269,37 @@ def test_get_pitching_stats_computes_real_fip(mocker, tmp_path):
     assert out.loc['Ace', 'ERA'] == out.loc['Wild', 'ERA']
     assert out.loc['Ace', 'FIP'] < out.loc['Wild', 'FIP'] - 1.0
     assert out.loc['Ace', 'FIP'] != out.loc['Ace', 'ERA']   # not just a copy
+
+
+# ---- de-vig helper (market-blended moneyline) ------------------------------
+import pytest as _pytest
+from src.fetcher import devig_home_prob
+
+
+def test_devig_home_prob_pick_em():
+    assert devig_home_prob(-110, -110) == _pytest.approx(0.5, abs=1e-6)
+
+
+def test_devig_home_prob_favorite():
+    p = devig_home_prob(-200, 170)
+    assert 0.60 < p < 0.68
+
+
+def test_devig_home_prob_none_only_when_both_missing():
+    assert devig_home_prob(None, None) is None
+
+
+def test_devig_home_prob_one_sided_uses_20cent_line():
+    # Only the home favorite quoted (-150). Reconstruct away on a 20-cent line
+    # (+130) and de-vig: home should land ~58%, clearly below the raw -150 (60%).
+    p = devig_home_prob(-150, None)
+    assert 0.55 < p < 0.60
+    # Symmetric: only the away favorite quoted -> home is the dog, prob < 0.5.
+    p2 = devig_home_prob(None, -150)
+    assert 0.40 < p2 < 0.45
+    assert p + p2 == _pytest.approx(1.0, abs=1e-6)   # mirror of each other
+
+
+def test_blender_in_calibrator_assets():
+    from src import fetcher
+    assert 'model_market_blender.pkl' in fetcher._CALIBRATOR_ASSETS

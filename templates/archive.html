@@ -36,7 +36,7 @@
         <thead>
             <tr>
                 <th>Version</th><th>Trained</th><th>Features</th><th>Train games</th>
-                <th>Days</th><th>Graded games</th><th>ML</th><th>Avg err</th>
+                <th>Days</th><th>Graded games</th><th>Consensus</th><th>Model</th><th>Avg err</th>
             </tr>
         </thead>
         <tbody>
@@ -52,7 +52,8 @@
                 <td>{{ v.n_games if v.n_games is not none else '—' }}</td>
                 <td>{{ v.days_with_games }}</td>
                 <td>{{ v.total_games }}</td>
-                <td class="acc">{% if v.total_games %}{{ v.winner_accuracy }}%{% else %}—{% endif %}</td>
+                <td class="acc">{% if v.total_games %}{{ v.consensus_accuracy }}%{% else %}—{% endif %}</td>
+                <td class="acc">{% if v.model_accuracy is not none %}{{ v.model_accuracy }}%{% else %}—{% endif %}</td>
                 <td>{% if v.avg_score_err is not none %}±{{ v.avg_score_err }}{% else %}—{% endif %}</td>
             </tr>
         {% endfor %}

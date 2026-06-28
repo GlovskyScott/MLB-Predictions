@@ -36,6 +36,59 @@ def _pred_dir(data_dir) -> Path:
     return Path(data_dir) / 'predictions'
 
 
+# ---- market-odds snapshot store --------------------------------------------
+# De-vigged inputs for the market-blended ("Consensus") moneyline. Version-
+# independent (the book line is the same regardless of model) and write-once: the
+# first line captured for a game is preserved (a closing-ish line); later captures
+# only add games not yet seen. Absent line -> the game falls back to the model.
+
+_market_odds_lock = threading.Lock()
+
+
+def _market_odds_dir(data_dir) -> Path:
+    return Path(data_dir) / 'market_odds'
+
+
+def load_market_odds(data_dir, date: str) -> dict:
+    """Return {game_id(str): {ml_home, ml_away, captured_at}} for date, or {}."""
+    f = _market_odds_dir(data_dir) / f'{date}.json'
+    if not f.exists():
+        return {}
+    try:
+        return json.loads(f.read_text())
+    except Exception:
+        return {}
+
+
+def save_market_odds(data_dir, date: str, odds: dict) -> None:
+    """Merge moneyline snapshots for date, write-once per game.
+
+    ``odds`` maps game_id -> {'ml_home': float|None, 'ml_away': float|None}.
+    Games missing either price are skipped; games already on disk keep their
+    first-captured line and timestamp.
+    """
+    import datetime
+    with _market_odds_lock:
+        existing = load_market_odds(data_dir, date)
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        changed = False
+        for gid, line in odds.items():
+            key = str(gid)
+            mlh, mla = (line or {}).get('ml_home'), (line or {}).get('ml_away')
+            if mlh is None or mla is None or key in existing:
+                continue
+            existing[key] = {'ml_home': float(mlh), 'ml_away': float(mla),
+                             'captured_at': now}
+            changed = True
+        if not changed and (_market_odds_dir(data_dir) / f'{date}.json').exists():
+            return
+        d = _market_odds_dir(data_dir)
+        d.mkdir(parents=True, exist_ok=True)
+        tmp = d / f'{date}.json.tmp'
+        tmp.write_text(json.dumps(existing, default=str))
+        tmp.replace(d / f'{date}.json')
+
+
 def model_version(data_dir):
     """Return the 12-hex version id for the current model pkls, or None if any
     pkl is missing. Deterministic: same bytes -> same id; any change -> new id.
