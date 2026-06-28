@@ -28,7 +28,7 @@ from src import blend as _blend
 from src.colors import hex_to_rgb_str as _hex_to_rgb_str, bar_color as _bar_color
 from src.explanations import (
     _explanation_cache, _load_disk_explanations, _build_explain_prompt,
-    _stream_ollama, _pregenerate_explanations,
+    _stream_ollama, _pregenerate_explanations, _generate_edge_summary_sync,
 )
 from src.chat import stream_chat
 from src.training import (
@@ -990,6 +990,17 @@ def create_app(testing: bool = False) -> Flask:
         return Response(stream_with_context(stream_chat(messages, context)),
                         mimetype='text/plain; charset=utf-8',
                         headers={'X-Accel-Buffering': 'no', 'Cache-Control': 'no-cache'})
+
+    @app.route('/edge/<int:game_id>')
+    def edge(game_id: int):
+        """One-sentence (<=12 word) AI edge angle for 'The bet' card. Returns
+        {'text': ''} when the game is unknown or Ollama is unavailable — the
+        client then keeps its deterministic fallback line."""
+        game = next((g for g in _simulation_cache if g.get('game_id') == game_id), None)
+        text = _generate_edge_summary_sync(game) if game else ''
+        return Response(json.dumps({'text': text}),
+                        mimetype='application/json',
+                        headers={'Cache-Control': 'no-cache'})
 
     @app.route('/explain/<int:game_id>')
     def explain(game_id: int):

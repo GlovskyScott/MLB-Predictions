@@ -138,6 +138,52 @@ def _generate_explanation_sync(game: dict) -> str:
         return ''
 
 
+_edge_summary_cache: dict = {}  # game_id → short (<=12 word) edge angle
+
+
+def _build_edge_prompt(game: dict) -> str:
+    """Prompt for a one-sentence (<=12 word) angle on why to take the model's
+    edge pick — the reasoning, not a restatement of the win% or odds."""
+    f = game.get('features', {})
+    aw, hw = game.get('away_abbr', 'AWAY'), game.get('home_abbr', 'HOME')
+    fav_home = game.get('home_win_pct', 50) >= game.get('away_win_pct', 50)
+    pick = hw if fav_home else aw
+    pick_p = game.get('home_pitcher' if fav_home else 'away_pitcher', 'the starter')
+    opp = aw if fav_home else hw
+    mk = game.get('market') or {}
+    return (
+        f"You are a sharp MLB betting analyst. The model likes {pick} over {opp} "
+        f"(+{mk.get('edge_ml_pct', 0)}% edge vs the market), behind {pick_p}.\n"
+        f"In ONE sentence, 12 words MAX, give the bettor the KEY ANGLE for taking "
+        f"{pick}. Do NOT restate the win %, the odds, or the projected score — only "
+        f"the reasoning. Plain text, no quotes, no period needed.\nAngle:"
+    )
+
+
+def _generate_edge_summary_sync(game: dict) -> str:
+    """One short edge-angle sentence from Ollama (non-streaming). Cached by id."""
+    gid = game.get('game_id')
+    if gid in _edge_summary_cache:
+        return _edge_summary_cache[gid]
+    try:
+        resp = _requests.post(
+            _OLLAMA_URL,
+            json={'model': _OLLAMA_MODEL, 'prompt': _build_edge_prompt(game),
+                  'stream': False, 'options': {'num_predict': 40, 'temperature': 0.6}},
+            timeout=60,
+        )
+        text = resp.json().get('response', '').strip()
+    except Exception:
+        text = ''
+    # Keep it to one sentence, trim trailing punctuation, hard-cap at 12 words.
+    text = text.replace('\n', ' ').strip().strip('"').split('. ')[0].rstrip('.')
+    if len(text.split()) > 12:
+        text = ' '.join(text.split()[:12])
+    if text and gid is not None:
+        _edge_summary_cache[gid] = text
+    return text
+
+
 def _pregenerate_explanations(games: list, game_date: str) -> None:
     """Background: generate and persist explanations for all valid games sequentially."""
     for game in games:
