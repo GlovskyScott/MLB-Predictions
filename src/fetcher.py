@@ -19,7 +19,7 @@ _MODEL_PKLS = ["model_win.pkl", "model_runs_home.pkl", "model_runs_away.pkl", "m
 # stay out of the version hash (predictions.model_version) since it's a serve-time
 # presentation transform, not a version-defining model. Restored best-effort; the
 # app falls back to the identity (uncalibrated) win% when it's absent.
-_CALIBRATOR_ASSET = "model_calibrator.pkl"
+_CALIBRATOR_ASSETS = ["model_calibrator.pkl", "model_inning_calibrator.pkl"]
 _PREDICTIONS_RELEASE_TAG = "prediction-archive"
 _PREDICTIONS_RELEASE_ASSET = "predictions.tar.gz"
 
@@ -34,8 +34,8 @@ def bootstrap_model_cache(repo: str = "jackleh/MLB-Predictions") -> None:
     trusted releases — never a third-party `repo`.
     """
     need_pkls = [p for p in _MODEL_PKLS if not (_DATA_DIR / p).exists()]
-    need_cal = not (_DATA_DIR / _CALIBRATOR_ASSET).exists()
-    if not need_pkls and not need_cal:
+    need_cals = [c for c in _CALIBRATOR_ASSETS if not (_DATA_DIR / c).exists()]
+    if not need_pkls and not need_cals:
         return
     import subprocess
     if need_pkls:
@@ -50,16 +50,16 @@ def bootstrap_model_cache(repo: str = "jackleh/MLB-Predictions") -> None:
             print("Model files restored.")
         except Exception as e:
             print(f"Could not download model files ({e}). Will retrain.")
-    if need_cal:
-        # Optional — older releases may not have it; the app stays correct (just
-        # uncalibrated) without it, so a failure here is non-fatal.
+    for asset in need_cals:
+        # Optional — older releases may not have these; the app stays correct
+        # (just uncalibrated) without them, so a failure here is non-fatal.
         try:
             subprocess.run(
                 ["gh", "release", "download", _MODEL_RELEASE_TAG,
-                 "-R", repo, "-D", str(_DATA_DIR), "--pattern", _CALIBRATOR_ASSET],
+                 "-R", repo, "-D", str(_DATA_DIR), "--pattern", asset],
                 check=True, capture_output=True,
             )
-            print("Win-probability calibrator restored.")
+            print(f"Calibrator restored: {asset}")
         except Exception:
             pass
 
