@@ -361,16 +361,18 @@ def get_team_recent_runs(team_id: int, game_date: str, year: int, n_games: int =
             key=lambda x: x['game_date'], reverse=True,
         )[:n_games]
         if not recent:
-            return 4.5
-        runs = [
-            float(g['home_score'] if g.get('home_id') == team_id else g['away_score'])
-            for g in recent
-        ]
-        result = round(sum(runs) / len(runs), 3)
-        _recent_runs_cache[cache_key] = result
-        return result
+            result = 4.5
+        else:
+            runs = [
+                float(g['home_score'] if g.get('home_id') == team_id else g['away_score'])
+                for g in recent
+            ]
+            result = round(sum(runs) / len(runs), 3)
     except Exception:
-        return 4.5
+        result = 4.5
+    # Cache every outcome (incl. the default) so repeated lookups don't recompute.
+    _recent_runs_cache[cache_key] = result
+    return result
 
 
 def get_bullpen_stress_l3(team_id: int, game_date: str, year: int,
