@@ -66,11 +66,14 @@ def total_over_prob(core: dict, line: float) -> float:
 
 
 def grade_markets(core: dict, actual_home: int, actual_away: int,
-                  total_line: float = None) -> dict:
-    """Grade ML / Spread / Total for one game.
+                  total_line: float = None,
+                  home_abbr: str = 'HOME', away_abbr: str = 'AWAY') -> dict:
+    """Grade ML / Spread / Total for one game and describe what the model picked.
 
-    Returns {'ml': bool, 'spread': bool, 'total': bool | 'push' | None}. ``total``
-    is None when no market line was captured for the game.
+    Returns {'ml'/'spread'/'total': bool | 'push' | None,
+             'ml_pick'/'spread_pick'/'total_pick': label str | None}. The result
+    keys are True/False/'push'/None (None when un-gradeable, e.g. no captured
+    line for Total); the *_pick keys are display labels for what was predicted.
     """
     actual_home = int(actual_home)
     actual_away = int(actual_away)
@@ -79,29 +82,38 @@ def grade_markets(core: dict, actual_home: int, actual_away: int,
     # ML — pick the side with win% > 50 (matches compare_date's winner_correct).
     pick_home = core.get('home_win_pct', 50.0) > 50.0
     ml = (pick_home == home_won)
+    ml_pick = home_abbr if pick_home else away_abbr
 
     # Spread / Total both need the score distribution; without it they are N/A.
     dist = core.get('score_distribution') or {}
     has_dist = sum(dist.get('home', [])) > 0 and sum(dist.get('away', [])) > 0
-    spread = None
-    total = None
+    spread = total = spread_pick = total_pick = None
     if has_dist:
         # Spread — favorite is the ML side; fav -1.5 if it covers >50%, else dog +1.5.
+        fav_abbr, dog_abbr = (home_abbr, away_abbr) if pick_home else (away_abbr, home_abbr)
         if pick_home:
             fav_margin = actual_home - actual_away
             fav_cover_p = home_cover_prob(core)
         else:
             fav_margin = actual_away - actual_home
             fav_cover_p = away_cover_prob(core)
-        spread = (fav_margin >= 2) if fav_cover_p > 0.5 else (fav_margin <= 1)
+        if fav_cover_p > 0.5:
+            spread = fav_margin >= 2
+            spread_pick = f"{fav_abbr} -1.5"
+        else:
+            spread = fav_margin <= 1
+            spread_pick = f"{dog_abbr} +1.5"
 
         # Total — pick over/under at the captured market line.
         if total_line is not None:
+            line = f"{total_line:g}"
             actual_total = actual_home + actual_away
+            over = total_over_prob(core, total_line) > 0.5
+            total_pick = f"O {line}" if over else f"U {line}"
             if actual_total == total_line:
                 total = 'push'
             else:
-                over = total_over_prob(core, total_line) > 0.5
                 total = (actual_total > total_line) if over else (actual_total < total_line)
 
-    return {'ml': ml, 'spread': spread, 'total': total}
+    return {'ml': ml, 'spread': spread, 'total': total,
+            'ml_pick': ml_pick, 'spread_pick': spread_pick, 'total_pick': total_pick}

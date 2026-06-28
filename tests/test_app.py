@@ -57,6 +57,9 @@ MOCK_RESULTS_DATA = {
         'home_score_err': 1.0,
         'away_score_err': 0.5,
         'winner_correct': True,
+        'ml_correct': True, 'ml_pick': 'NYY',
+        'spread_correct': False, 'spread_pick': 'NYY -1.5',
+        'total_correct': None, 'total_pick': None,
     }],
 }
 
@@ -110,6 +113,17 @@ def test_index_renders_inning_distribution_bars(client, mocker):
     response = client.get('/')
     assert b'inn-bar' in response.data        # 3-class stacked bars rendered
     assert b'Both' in response.data           # combined (any team scores) row
+
+
+def test_results_row_shows_ml_and_spread_picks(client, mocker):
+    mocker.patch('src.app.run_daily_simulation', return_value=[MOCK_SIM_RESULT])
+    mocker.patch('src.app._get_results_for_date', return_value=MOCK_RESULTS_DATA)
+    mocker.patch('src.app._aggregate_days', return_value=MOCK_AGGREGATE)
+    html = client.get('/').data.decode()
+    assert 'NYY -1.5' in html          # spread pick shown for the previous prediction
+    assert '>ML<' in html and '>RL<' in html
+    # Total pick is hidden for past games with no captured market line.
+    assert '>Tot<' not in html
 
 
 def test_refresh_redirects(client, mocker):
