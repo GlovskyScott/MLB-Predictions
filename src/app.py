@@ -11,7 +11,7 @@ from src.fetcher import (
     get_bullpen_stats, get_season_schedule, get_weather_for_game, get_game_linescore,
     get_game_lineup, bootstrap_data_cache, bootstrap_model_cache,
     bootstrap_predictions_cache, refresh_schedule_date,
-    get_market_odds, market_key,
+    get_market_odds, market_key, devig_home_prob,
 )
 from src.features import build_game_features, build_inning_feature_row, _NEUTRAL_WEATHER, FEATURE_VERSION, FEATURE_COLUMNS
 from src.model import (
@@ -24,6 +24,7 @@ from src.stadiums import get_stadium
 from src.teams import get_team_meta
 from src import predictions as _pred
 from src import calibration as _cal
+from src import blend as _blend
 from src.colors import hex_to_rgb_str as _hex_to_rgb_str, bar_color as _bar_color
 from src.explanations import (
     _explanation_cache, _load_disk_explanations, _build_explain_prompt,
@@ -47,6 +48,7 @@ _results_cache: dict = {}
 _last_results_date: str = ""
 _actuals_cache: dict = {}  # settled date -> {game_id: final game}; avoids redundant live refreshes
 _calibrator_cache: dict = {}  # data-dir -> PlattCalibrator|None; win% calibration loaded lazily
+_blender_cache: dict = {}  # data-dir -> MarketBlender|None; market blend loaded lazily
 
 
 def _get_calibrator(filename=_cal.CALIBRATOR_FILE):
@@ -101,6 +103,34 @@ def _calibrate_core(core: dict) -> dict:
             vals = core.get(key)
             if vals:
                 out[key] = [_cal.calibrate_pct(inn_cal, v) for v in vals]
+    return out
+
+
+def _get_blender():
+    """Load (and cache) the market blender for the active data dir."""
+    key = str(_DATA_DIR)
+    if key not in _blender_cache:
+        _blender_cache[key] = _blend.load(_DATA_DIR)
+    return _blender_cache[key]
+
+
+def _blend_core(core: dict, market_home_prob: "float | None") -> dict:
+    """Return a copy whose home/away win% is the market-blended ('Consensus')
+    line, with the calibrated model-only value preserved under model_*.
+
+    The blender consumes the RAW model prob (it was fit on raw logits). Falls back
+    to the (calibrated) model line when there is no blender or no market line."""
+    out = dict(core)
+    model_home = core.get('home_win_pct')        # already calibrated by _calibrate_core
+    out['model_home_win_pct'] = model_home
+    out['model_away_win_pct'] = core.get('away_win_pct')
+    raw_home = core.get('raw_home_win_pct', model_home)
+    # market_home_prob is a 0-1 fraction (devig_home_prob); blend_pct wants 0-100.
+    market_home_pct = market_home_prob * 100.0 if market_home_prob is not None else None
+    blended = _blend.blend_pct(_get_blender(), raw_home, market_home_pct)
+    if blended is not None:
+        out['home_win_pct'] = blended
+        out['away_win_pct'] = round(100.0 - blended, 1)
     return out
 
 
@@ -322,12 +352,26 @@ def run_daily_simulation(sim_date: str = None) -> list[dict]:
     market = get_market_odds(sim_date)
     schedule = get_schedule(sim_date)
 
+    # Snapshot today's moneylines write-once — a load-bearing input to the blended
+    # ("Consensus") line, so the headline is reproducible when this date is graded.
+    snap = {}
+    for game in schedule:
+        mk = market.get(market_key(game.get('away_name', ''), game.get('home_name', '')))
+        if mk and mk.get('ml_home') is not None and mk.get('ml_away') is not None:
+            snap[game['game_id']] = {'ml_home': mk['ml_home'], 'ml_away': mk['ml_away']}
+    try:
+        _pred.save_market_odds(_DATA_DIR, sim_date, snap)
+    except Exception:
+        pass
+
     results = []
     for game in schedule:
         try:
             g = _enrich_game(game, cores.get(game['game_id'], {}))
             mk = market.get(market_key(g.get('away_name', ''), g.get('home_name', '')))
-            g['market'] = _market_block(g, mk) if mk else None
+            market_home_prob = devig_home_prob(mk.get('ml_home'), mk.get('ml_away')) if mk else None
+            g.update(_blend_core(g, market_home_prob))   # Consensus headline; model_* preserved
+            g['market'] = _market_block(g, mk) if mk else None   # edge = Consensus vs market
             g['best_edge'] = _best_edge(g['market'])
             results.append(g)
         except Exception as e:
@@ -489,25 +533,33 @@ def compare_date(result_date: str, version: str = None) -> dict:
     cores = _pred.load_prediction(_DATA_DIR, version, result_date) or []
 
     actuals = _actuals_for_date(result_date)
+    market_odds = _pred.load_market_odds(_DATA_DIR, result_date)
     results = []
-    correct = 0
+    correct = 0          # blended / Consensus (the headline pick of record)
+    model_correct = 0    # model-only (kept for comparison)
     for core in cores:
         game = actuals.get(core.get('game_id'))
         if not game:
             continue  # not final yet — no comparison row
-        core = _calibrate_core(core)  # display win% calibrated; pick (>50) unchanged
+        core = _calibrate_core(core)  # model-only calibrated line (+ raw_home_win_pct)
+        o = market_odds.get(str(core.get('game_id')))
+        market_home_prob = devig_home_prob(o['ml_home'], o['ml_away']) if o else None
+        core = _blend_core(core, market_home_prob)   # blended home_win_pct + model_* preserved
         actual_home = int(game['home_score'])
         actual_away = int(game['away_score'])
         actual_home_won = actual_home > actual_away
-        predicted_home_won = core.get('home_win_pct', 50.0) > 50.0
-        home_err = abs(core.get('median_home_score', 0) - actual_home)
-        away_err = abs(core.get('median_away_score', 0) - actual_away)
+        predicted_home_won = core.get('home_win_pct', 50.0) > 50.0          # blended (Consensus) pick
+        model_home_won = core.get('model_home_win_pct', 50.0) > 50.0        # model-only pick
         winner_correct = actual_home_won == predicted_home_won
+        model_winner_correct = actual_home_won == model_home_won
         if winner_correct:
             correct += 1
+        if model_winner_correct:
+            model_correct += 1
+        home_err = abs(core.get('median_home_score', 0) - actual_home)
+        away_err = abs(core.get('median_away_score', 0) - actual_away)
         home_meta = get_team_meta(game['home_id'])
         away_meta = get_team_meta(game['away_id'])
-        # ML is the only graded market; its pick label is the favored side.
         ml_pick = home_meta.get('abbr', 'HOME') if predicted_home_won else away_meta.get('abbr', 'AWAY')
         results.append({
             **game,
@@ -519,8 +571,8 @@ def compare_date(result_date: str, version: str = None) -> dict:
             'home_score_err': round(home_err, 1),
             'away_score_err': round(away_err, 1),
             'winner_correct': winner_correct,
-            # ML is the only graded market; its pick is the winner pick.
-            'ml_correct': winner_correct,
+            'ml_correct': winner_correct,                 # headline = Consensus
+            'model_winner_correct': model_winner_correct,  # model-only, for comparison
             'ml_pick': ml_pick,
             'home_logo': home_meta['logo_url'],
             'away_logo': away_meta['logo_url'],
@@ -532,6 +584,7 @@ def compare_date(result_date: str, version: str = None) -> dict:
 
     n = len(results)
     accuracy = round(correct / n * 100, 1) if n else 0
+    model_acc = round(model_correct / n * 100, 1) if n else 0
     scored = [r for r in results if 'home_score_err' in r]
     avg_err = round(
         sum(r['home_score_err'] + r['away_score_err'] for r in scored) / (2 * len(scored)), 2
@@ -543,6 +596,8 @@ def compare_date(result_date: str, version: str = None) -> dict:
         'n_completed': n,
         'winner_accuracy': accuracy,
         'ml_accuracy': accuracy,
+        'consensus_accuracy': accuracy,
+        'model_accuracy': model_acc,
         'avg_score_err': avg_err,
     }
 
@@ -594,6 +649,10 @@ def _aggregate_days(n_days: int, version: str = None) -> dict:
         round(r['winner_accuracy'] / 100 * r['n_completed']) for r in daily
     )
     accuracy = round(total_correct / total_games * 100, 1) if total_games else 0
+    model_total = sum(
+        round((r.get('model_accuracy') or 0) / 100 * r['n_completed']) for r in daily
+    )
+    model_accuracy = round(model_total / total_games * 100, 1) if total_games else 0
     scored = [r for r in daily if r.get('avg_score_err') is not None]
     avg_err = round(
         sum(r['avg_score_err'] for r in scored) / len(scored), 2
@@ -604,6 +663,8 @@ def _aggregate_days(n_days: int, version: str = None) -> dict:
         'days_with_games': len(daily),
         'winner_accuracy': accuracy,
         'ml_accuracy': accuracy,
+        'consensus_accuracy': accuracy,
+        'model_accuracy': model_accuracy,
         'avg_score_err': avg_err,
         'daily': daily,
     }
@@ -639,6 +700,8 @@ def _version_summary(version: str) -> dict:
     total = sum(r['n_completed'] for r in daily)
     correct = sum(round(r['winner_accuracy'] / 100 * r['n_completed']) for r in daily)
     accuracy = round(correct / total * 100, 1) if total else 0
+    model_total = sum(round((r.get('model_accuracy') or 0) / 100 * r['n_completed']) for r in daily)
+    model_accuracy = round(model_total / total * 100, 1) if total else 0
     scored = [r for r in daily if r.get('avg_score_err') is not None]
     avg_err = round(sum(r['avg_score_err'] for r in scored) / len(scored), 2) if scored else None
     result = {
@@ -646,6 +709,8 @@ def _version_summary(version: str) -> dict:
         'days_with_games': len(daily),
         'winner_accuracy': accuracy,
         'ml_accuracy': accuracy,
+        'consensus_accuracy': accuracy,
+        'model_accuracy': model_accuracy,
         'avg_score_err': avg_err,
         'daily': daily,
     }
@@ -762,8 +827,11 @@ def _track_ui(last_7: dict, last_30: dict, last_90: dict,
     """Track Record tab payload: 7/30/90 summary, yesterday's graded games,
     and the last-7-days daily accuracy bars."""
     def _summary(label, agg):
-        acc = agg.get('winner_accuracy') or 0
+        # Headline = Consensus (market-blended) accuracy — the graded pick of
+        # record; model-only accuracy is shown alongside for comparison (PR #15).
+        acc = agg.get('consensus_accuracy', agg.get('winner_accuracy')) or 0
         return {'label': label, 'acc': acc,
+                'model': agg.get('model_accuracy'),
                 'games': agg.get('total_games', 0),
                 'err': agg.get('avg_score_err'),
                 'good': acc >= 53}
@@ -781,7 +849,7 @@ def _track_ui(last_7: dict, last_30: dict, last_90: dict,
 
     daily = [{'date': _fmt_short_date(d['result_date']),
               'n': d.get('n_completed', 0),
-              'acc': round(d.get('winner_accuracy') or 0)}
+              'acc': round(d.get('consensus_accuracy', d.get('winner_accuracy')) or 0)}
              for d in (last_7.get('daily') or [])]
 
     return {
@@ -831,7 +899,7 @@ def create_app(testing: bool = False) -> Flask:
         games_ui = [u for g in _simulation_cache if (u := _game_ui(g)) is not None]
         payload = {
             'dateLabel': date.today().strftime('%a, %b ') + str(date.today().day),
-            'accAccuracy': round(last_7.get('winner_accuracy') or 0),
+            'accAccuracy': round(last_7.get('consensus_accuracy', last_7.get('winner_accuracy')) or 0),
             'games': games_ui,
             'track': _track_ui(last_7, last_30, last_90, _results_cache, yesterday),
             'model': {
@@ -880,6 +948,8 @@ def create_app(testing: bool = False) -> Flask:
                 'total_games': s['total_games'],
                 'days_with_games': s['days_with_games'],
                 'winner_accuracy': s['winner_accuracy'],
+                'consensus_accuracy': s.get('consensus_accuracy', s['winner_accuracy']),
+                'model_accuracy': s.get('model_accuracy'),
                 'avg_score_err': s['avg_score_err'],
                 'is_current': v['version'] == current,
             })

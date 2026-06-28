@@ -20,7 +20,7 @@ _MODEL_PKLS = ["model_win.pkl", "model_runs_home.pkl", "model_runs_away.pkl", "m
 # presentation transform, not a version-defining model. Restored best-effort; the
 # app falls back to the identity (uncalibrated) win% when it's absent.
 _CALIBRATOR_ASSETS = ["model_calibrator.pkl", "model_inning_calibrator.pkl",
-                      "model_inning_dist_calibrator.pkl"]
+                      "model_inning_dist_calibrator.pkl", "model_market_blender.pkl"]
 _PREDICTIONS_RELEASE_TAG = "prediction-archive"
 _PREDICTIONS_RELEASE_ASSET = "predictions.tar.gz"
 
@@ -953,6 +953,48 @@ def market_key(away_name: str, home_name: str) -> tuple:
     def norm(n):
         return ''.join(ch for ch in str(n).lower() if ch.isalnum())
     return (norm(away_name), norm(home_name))
+
+
+def _implied(odds) -> "float | None":
+    if odds is None:
+        return None
+    o = float(odds)
+    return (-o) / ((-o) + 100.0) if o < 0 else 100.0 / (o + 100.0)
+
+
+# Standard MLB moneyline is a ~20-cent line (the two American prices differ by
+# ~20 cents of vig). When only one side is quoted, reconstruct the other on a
+# 20-cent line so we can still de-vig instead of dropping the game.
+_STANDARD_CENT_LINE = 20.0
+
+
+def _opposite_20cent(price) -> float:
+    """The opposite American price on a standard 20-cent line.
+
+    Favorite -F  -> underdog +(F - 20);  underdog +U -> favorite -(U + 20).
+    Near pick'em this lands close to even, which is the intended ~50%."""
+    p = float(price)
+    return abs(p) - _STANDARD_CENT_LINE if p <= 0 else -(p + _STANDARD_CENT_LINE)
+
+
+def devig_home_prob(ml_home, ml_away) -> "float | None":
+    """De-vigged home win probability from American prices, or None if neither is
+    quoted.
+
+    Both sides present: proportional de-vig (normalize the two raw implied probs
+    to sum to 1) — this removes whatever hold is in the line, including the
+    standard ~20-cent vig. Only one side present: reconstruct the missing side on
+    a standard 20-cent line (``_opposite_20cent``) and then de-vig."""
+    if ml_home is None and ml_away is None:
+        return None
+    if ml_home is None:
+        ml_home = _opposite_20cent(ml_away)
+    elif ml_away is None:
+        ml_away = _opposite_20cent(ml_home)
+    ih, ia = _implied(ml_home), _implied(ml_away)
+    if ih is None or ia is None or (ih + ia) == 0:
+        return None
+    return ih / (ih + ia)
 
 
 def _avg(values) -> float | None:

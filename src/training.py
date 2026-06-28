@@ -71,6 +71,7 @@ def build_training_df(years: list[int] = None) -> pd.DataFrame:
                 features['home_win'] = 1 if float(game['home_score']) > float(game['away_score']) else 0
                 features['status'] = 'Final'
                 features['game_date'] = game['game_date']
+                features['game_id'] = game.get('game_id')   # passthrough for market-odds join (not a feature)
                 rows.append(features)
             except Exception:
                 continue

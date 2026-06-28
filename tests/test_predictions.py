@@ -57,3 +57,37 @@ def test_next_build_counts_per_major(tmp_path):
     assert P.next_build(tmp_path, 4) == 2   # -> next would be v4.2
     assert P.next_build(tmp_path, 1) == 1   # -> next would be v1.1
     assert P.next_build(tmp_path, 5) == 0   # new feature gen starts at .0
+
+
+# ---- market-odds (moneyline) snapshot store --------------------------------
+
+def test_market_odds_round_trip(tmp_path):
+    P.save_market_odds(tmp_path, '2026-06-28',
+                       {1: {'ml_home': -130, 'ml_away': 110},
+                        2: {'ml_home': 105, 'ml_away': -125}})
+    got = P.load_market_odds(tmp_path, '2026-06-28')
+    assert got['1']['ml_home'] == -130 and got['1']['ml_away'] == 110
+    assert 'captured_at' in got['1']
+
+
+def test_market_odds_missing_returns_empty(tmp_path):
+    assert P.load_market_odds(tmp_path, '2026-01-01') == {}
+
+
+def test_market_odds_write_once(tmp_path):
+    P.save_market_odds(tmp_path, '2026-06-28', {1: {'ml_home': -130, 'ml_away': 110}})
+    ts = P.load_market_odds(tmp_path, '2026-06-28')['1']['captured_at']
+    P.save_market_odds(tmp_path, '2026-06-28',
+                       {1: {'ml_home': -200, 'ml_away': 170},
+                        3: {'ml_home': 100, 'ml_away': -120}})
+    got = P.load_market_odds(tmp_path, '2026-06-28')
+    assert got['1']['ml_home'] == -130 and got['1']['captured_at'] == ts
+    assert got['3']['ml_home'] == 100
+
+
+def test_market_odds_skips_incomplete(tmp_path):
+    P.save_market_odds(tmp_path, '2026-06-28',
+                       {1: {'ml_home': None, 'ml_away': 110},
+                        2: {'ml_home': -120, 'ml_away': 100}})
+    got = P.load_market_odds(tmp_path, '2026-06-28')
+    assert '1' not in got and got['2']['ml_home'] == -120
