@@ -447,10 +447,16 @@ def _game_chat_line(g: dict) -> str:
     if mk:
         side, pct = mk.get('edge_ml_side'), mk.get('edge_ml_pct') or 0
         side_price = mk.get('ml_home') if side == hw else mk.get('ml_away')
+        fair_price = (m.get('ml_home') if side == hw else m.get('ml_away')) if m else None
+        side_wp = g.get('home_win_pct') if side == hw else g.get('away_win_pct')
         if pct >= _EDGE_MIN_PCT:
+            why = (f" WHY (state it this way, exact signs): the model gives {side} a {side_wp}% "
+                   f"win chance, so its fair price is {fair_price}; the market only asks "
+                   f"{side_price}, a more generous number than fair — that gap is the +{pct}% "
+                   f"edge.") if fair_price is not None else ""
             verdict = (f"COMPUTED VERDICT: value side is {side} at {side_price} "
                        f"(model edge +{pct}%). The bet, if any, is {side} at {side_price} — "
-                       f"never the other side, never a different price.")
+                       f"never the other side, never a different price.{why}")
         else:
             verdict = ("COMPUTED VERDICT: NO BET — no side clears the "
                        f"{_EDGE_MIN_PCT}% edge threshold; model and market roughly agree.")
