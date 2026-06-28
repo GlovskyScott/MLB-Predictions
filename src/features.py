@@ -11,7 +11,8 @@ from src.stadiums import get_stadium, classify_wind
 
 _DATA_DIR = Path(__file__).parent.parent / "data"
 
-FEATURE_VERSION = 4  # Increment whenever FEATURE_COLUMNS changes
+FEATURE_VERSION = 5  # Increment whenever FEATURE_COLUMNS changes (or their semantics:
+                     # v5 regresses starter rate stats to league average by IP)
 
 # Canonical ordered list of all features fed to XGBoost
 FEATURE_COLUMNS = [
@@ -62,6 +63,34 @@ _PITCHER_DEFAULTS = {
 }
 _TEAM_BATTING_DEFAULTS = {'woba': 0.315, 'ops': 0.730}
 _BULLPEN_DEFAULTS = {'era': 4.00, 'whip': 1.30}
+
+# Innings-pitched prior weight for regressing a starter's rate stats toward
+# league average (empirical Bayes). A pitcher needs ~K innings before his own
+# rates carry equal weight to the league-average prior. This tames tiny-sample
+# starters: a 3-IP spot starter no longer reads as a true-talent 12.00 FIP and
+# blow up the opponent's predicted runs.
+_PITCHER_SHRINK_IP = 50.0
+# Rate stats that get regressed to the mean (IP itself is a sample size, not a rate).
+_PITCHER_RATE_KEYS = ('era', 'fip', 'xfip', 'whip', 'k9', 'bb9', 'hr9')
+
+
+def _shrink_pitcher_stats(sp: dict) -> dict:
+    """Regress a starter's rate stats toward league average by innings pitched.
+
+    shrunk = (ip * raw + K * prior) / (ip + K), with prior = the league-average
+    default and K = _PITCHER_SHRINK_IP. Low-IP starters (callups, spot starts,
+    season openers) have noisy rates; without this their extreme ERA/FIP/HR9 are
+    taken at face value and the run regressors over-predict the opponent's runs.
+    ip == 0 (TBD / no data) collapses every rate to the league-average prior.
+    Mutates and returns ``sp``.
+    """
+    ip = max(float(sp.get('ip', 0.0) or 0.0), 0.0)
+    w = ip + _PITCHER_SHRINK_IP
+    for key in _PITCHER_RATE_KEYS:
+        prior = _PITCHER_DEFAULTS[key]
+        raw = float(sp.get(key, prior))
+        sp[key] = (ip * raw + _PITCHER_SHRINK_IP * prior) / w
+    return sp
 
 
 def _get_pitcher_stats(pitcher_name: str, pitching_df: pd.DataFrame) -> dict:
@@ -266,6 +295,13 @@ def build_game_features(game: dict, year: int = 2026, weather: dict = None,
             home_bat = home_lineup_bat
         if away_lineup_bat is not None:
             away_bat = away_lineup_bat
+
+    # Regress starter rate stats toward league average by IP — after any splits
+    # override (which can supply their own small-sample IP) so the shrinkage sees
+    # the innings actually behind the numbers. Applied in both the training and
+    # inference paths so the feature means the same thing at fit and serve time.
+    _shrink_pitcher_stats(home_sp)
+    _shrink_pitcher_stats(away_sp)
 
     home_bp = _get_bullpen_stats(home_id, bullpen_df)
     away_bp = _get_bullpen_stats(away_id, bullpen_df)

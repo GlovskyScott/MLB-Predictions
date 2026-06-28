@@ -8,8 +8,8 @@ from src.features import FEATURE_COLUMNS, INNING_FEATURE_COLUMNS, build_inning_f
 _DEFAULT_MODEL_DIR = Path(__file__).parent.parent / "data"
 
 # Hyperparameters for the two run regressors (home_runs / away_runs). These feed
-# the simulator, which produces every served number (win%, scores, run-line /
-# total edges), so they are the highest-impact knob in the system. Selected by
+# the simulator, which produces every served number (win%, scores, moneyline
+# edge), so they are the highest-impact knob in the system. Selected by
 # walk-forward (past-only) cross-validation in scripts/tune_regressors.py against
 # out-of-sample run-prediction error, with a locked final-season holdout to guard
 # against overfitting the backtest. Changing these changes the pkl bytes and so

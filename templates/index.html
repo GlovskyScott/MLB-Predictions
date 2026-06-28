@@ -1,11 +1,6 @@
 {% macro market_stats(s) -%}
 {% set ml = s.get('ml_accuracy', s.get('winner_accuracy')) %}
-{% set sp = s.get('spread_accuracy') %}
-{% set to = s.get('total_accuracy') %}
 <div class="summary-stat"><div class="s-label" title="Moneyline: % of games the predicted winner was correct">ML</div><div class="s-value {% if ml is not none and ml >= 55 %}good{% else %}neutral{% endif %}">{% if ml is not none %}{{ ml }}%{% else %}—{% endif %}</div></div>
-<div class="summary-stat"><div class="s-label" title="Run line ±1.5: % of model picks that covered">Spread</div><div class="s-value {% if sp is not none and sp >= 52 %}good{% else %}neutral{% endif %}">{% if sp is not none %}{{ sp }}%{% else %}—{% endif %}</div></div>
-{# Total only shown once there are graded totals (needs games with a captured market line that have finalized) #}
-{% if to is not none %}<div class="summary-stat"><div class="s-label" title="Total O/U vs market line: % of model picks correct (pushes excluded)">Total</div><div class="s-value {% if to >= 52 %}good{% else %}neutral{% endif %}">{{ to }}%</div></div>{% endif %}
 {%- endmacro %}
 {% macro pick_row(label, pick, result, na_title) -%}
 <div class="pick-row"><span class="pick-mkt">{{ label }}</span>
@@ -370,30 +365,22 @@
         {% if r.lines %}
         <div class="odds-block">
             <table class="odds-table">
-                <tr class="odds-head"><th></th><th>Run line</th><th>Total</th><th>Moneyline</th></tr>
+                <tr class="odds-head"><th></th><th>Moneyline</th></tr>
                 <tr class="row-model">
                     <td class="odds-team">{{ r.away_abbr }}</td>
-                    <td>{{ r.lines.spread_away }}</td>
-                    <td>O {{ r.lines.total_line }} {{ r.lines.total_over }}</td>
                     <td>{{ r.lines.ml_away }}</td>
                 </tr>
                 <tr class="row-model">
                     <td class="odds-team">{{ r.home_abbr }}</td>
-                    <td>{{ r.lines.spread_home }}</td>
-                    <td>U {{ r.lines.total_line }} {{ r.lines.total_under }}</td>
                     <td>{{ r.lines.ml_home }}</td>
                 </tr>
                 {% if r.market %}
                 <tr class="row-espn" title="Average sportsbook line ({{ r.market.n_books }} book{{ 's' if r.market.n_books != 1 }})">
                     <td class="odds-team">ESPN</td>
-                    <td>±1.5 {{ r.market.runline_odds }}</td>
-                    <td>{{ r.market.total }} {{ r.market.total_over }}/{{ r.market.total_under }}</td>
                     <td>{{ r.away_abbr }} {{ r.market.ml_away }} · {{ r.home_abbr }} {{ r.market.ml_home }}</td>
                 </tr>
                 <tr class="row-edge" title="Model edge = model probability − market implied probability, on the side the model favors">
                     <td class="odds-team">Edge</td>
-                    <td>{% if r.market.edge_rl_pct is not none %}{{ r.market.edge_rl_side }} +{{ r.market.edge_rl_pct }}%{% else %}—{% endif %}</td>
-                    <td>{% if r.market.edge_total_pct is not none %}{{ r.market.edge_total_side }} +{{ r.market.edge_total_pct }}%{% else %}—{% endif %}</td>
                     <td>{{ r.market.edge_ml_side }} +{{ r.market.edge_ml_pct }}%</td>
                 </tr>
                 {% endif %}
@@ -516,7 +503,7 @@
         </div>
         {% if yesterday and yesterday.get('n_completed', 0) > 0 %}
         <table class="results-table">
-            <thead><tr><th>Away</th><th>Home</th><th>Actual</th><th title="Most common predicted final score">Pred</th><th title="What the model picked per market, and whether it hit (✓ / ✗ / Push / · no line)">Picks</th><th title="Average score error vs actual result">Err</th></tr></thead>
+            <thead><tr><th>Away</th><th>Home</th><th>Actual</th><th title="Most common predicted final score">Pred</th><th title="The model's moneyline pick and whether it hit (✓ / ✗)">Pick</th><th title="Average score error vs actual result">Err</th></tr></thead>
             <tbody>
             {% for g in yesterday.games %}
                 {% if g.get('error') %}
@@ -535,9 +522,6 @@
                     </td>
                     <td>
                         {{ pick_row('ML', g.ml_pick, g.ml_correct, '') }}
-                        {{ pick_row('RL', g.spread_pick, g.spread_correct, 'No run-line distribution') }}
-                        {# Total only shown when a market line was captured (never for pre-capture history) #}
-                        {% if g.total_pick %}{{ pick_row('Tot', g.total_pick, g.total_correct, '') }}{% endif %}
                     </td>
                     <td>{% set err = (g.home_score_err + g.away_score_err) / 2 %}<span class="{% if err <= 1.0 %}err-low{% elif err <= 2.5 %}err-mid{% else %}err-high{% endif %}">±{{ "%.1f"|format(err) }}</span></td>
                 </tr>

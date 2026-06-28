@@ -24,7 +24,6 @@ from src.stadiums import get_stadium
 from src.teams import get_team_meta
 from src import predictions as _pred
 from src import calibration as _cal
-from src import grading as _grading
 from src.colors import hex_to_rgb_str as _hex_to_rgb_str, bar_color as _bar_color
 from src.explanations import (
     _explanation_cache, _load_disk_explanations, _build_explain_prompt,
@@ -190,65 +189,17 @@ def _american(p: float) -> str:
 
 
 def _market_lines(game: dict) -> dict:
-    """Derive model-implied, sportsbook-style betting lines from a prediction core.
+    """Derive the model-implied moneyline from a prediction core.
 
-    Real lines are fixed numbers with odds attached, not continuous expectations:
-    - moneyline: fair American odds from the win probability
-    - run line:  fixed ±1.5 (MLB standard), odds = P(favorite wins by ≥2)
-    - total:     a .5/.0 line near the expected total, with fair over/under odds
-
-    The run-margin and total distributions are reconstructed by convolving the
-    stored per-team score histograms (the simulator draws the teams' runs
-    independently, so the convolution matches its joint distribution). All values
-    are display-ready strings.
+    The app supports the moneyline market only: fair (no-vig) American odds from
+    the win probability. Run-line and total markets were removed — their edges
+    were computed from the raw, uncalibrated score distribution (and the run line
+    against a fabricated 50% baseline), which manufactured implausible edges.
     """
-    from collections import defaultdict
-
-    ml_home = _american(game.get('home_win_pct', 50.0) / 100.0)
-    ml_away = _american(game.get('away_win_pct', 50.0) / 100.0)
-    blank = {'ml_home': ml_home, 'ml_away': ml_away, 'spread_home': '—',
-             'spread_away': '—', 'total_line': '—', 'total_over': '', 'total_under': ''}
-
-    dist = game.get('score_distribution') or {}
-    home_counts, away_counts = dist.get('home') or [], dist.get('away') or []
-    hsum, asum = sum(home_counts), sum(away_counts)
-    if not hsum or not asum:
-        return blank
-
-    hp = [c / hsum for c in home_counts]   # P(home runs == i)
-    ap = [c / asum for c in away_counts]    # P(away runs == j)
-    margin, total = defaultdict(float), defaultdict(float)
-    for h, ph in enumerate(hp):
-        if not ph:
-            continue
-        for a, pa in enumerate(ap):
-            if pa:
-                margin[h - a] += ph * pa
-                total[h + a] += ph * pa
-
-    # ---- Total: nearest half-run line, fair over/under odds ----
-    exp_total = sum(t * p for t, p in total.items())
-    line = round(exp_total * 2) / 2                      # ends in .0 or .5
-    p_over = sum(p for t, p in total.items() if t > line)
-    p_under = sum(p for t, p in total.items() if t < line)
-    denom = (p_over + p_under) or 1.0                    # drop pushes on a .0 line
-    total_line = f"{line:.1f}"
-    total_over, total_under = _american(p_over / denom), _american(p_under / denom)
-
-    # ---- Run line: fixed 1.5, favorite by win probability ----
-    fav_home = game.get('home_win_pct', 50.0) >= game.get('away_win_pct', 50.0)
-    if fav_home:
-        p_cover = sum(p for d, p in margin.items() if d >= 2)   # home wins by ≥2
-        spread_home = f"-1.5 {_american(p_cover)}"
-        spread_away = f"+1.5 {_american(1 - p_cover)}"
-    else:
-        p_cover = sum(p for d, p in margin.items() if d <= -2)  # away wins by ≥2
-        spread_away = f"-1.5 {_american(p_cover)}"
-        spread_home = f"+1.5 {_american(1 - p_cover)}"
-
-    return {'ml_home': ml_home, 'ml_away': ml_away,
-            'spread_home': spread_home, 'spread_away': spread_away,
-            'total_line': total_line, 'total_over': total_over, 'total_under': total_under}
+    return {
+        'ml_home': _american(game.get('home_win_pct', 50.0) / 100.0),
+        'ml_away': _american(game.get('away_win_pct', 50.0) / 100.0),
+    }
 
 
 def _enrich_game(game: dict, core: dict) -> dict:
@@ -303,36 +254,17 @@ def _fmt_american(v, default=None):
 
 
 def _market_block(game: dict, mk: dict) -> dict:
-    """Format the averaged ESPN line (with -110 defaults where a price is missing)
-    and compute the model's edge % per market — the model's probability minus the
-    market's de-vigged implied probability, shown on the side the model favors."""
-    from collections import defaultdict
+    """Format the averaged ESPN moneyline and compute the model's moneyline edge %
+    — the model's (calibrated) win probability minus the market's de-vigged implied
+    probability, shown on the side the model favors.
 
-    # Model run-margin + total distributions, by convolving the per-team score
-    # histograms (the sim draws each team's runs independently).
-    dist = game.get('score_distribution') or {}
-    hc, ac = dist.get('home') or [], dist.get('away') or []
-    hsum, asum = sum(hc), sum(ac)
-    margin, total = defaultdict(float), defaultdict(float)
-    if hsum and asum:
-        hp, ap = [c / hsum for c in hc], [c / asum for c in ac]
-        for h, ph in enumerate(hp):
-            if ph:
-                for a, pa in enumerate(ap):
-                    if pa:
-                        margin[h - a] += ph * pa
-                        total[h + a] += ph * pa
+    Moneyline only: the run-line and total markets were removed."""
     model_home_win = game.get('home_win_pct', 50.0) / 100.0
-    fav_home = model_home_win >= 0.5
     ha, aa = game.get('home_abbr'), game.get('away_abbr')
 
     block = {
         'ml_home': _fmt_american(mk.get('ml_home')),
         'ml_away': _fmt_american(mk.get('ml_away')),
-        'total': f"{mk['total']:.1f}" if mk.get('total') is not None else '—',
-        'total_over': _fmt_american(mk.get('over_odds'), default=-110),
-        'total_under': _fmt_american(mk.get('under_odds'), default=-110),
-        'runline_odds': '-110',   # ESPN gives the ±1.5 line but no price
         'n_books': mk.get('n_books', 0),
     }
 
@@ -342,36 +274,10 @@ def _market_block(game: dict, mk: dict) -> dict:
     ml_edge = model_home_win - mkt_home
     block['edge_ml_side'] = ha if ml_edge >= 0 else aa
     block['edge_ml_pct'] = round(abs(ml_edge) * 100)
-
-    # Total edge — model P(over) at the MARKET line vs the de-vigged market over.
-    line = mk.get('total')
-    if line is not None and total:
-        po = sum(p for t, p in total.items() if t > line)
-        pu = sum(p for t, p in total.items() if t < line)
-        model_over = po / (po + pu) if (po + pu) else 0.5
-        io, iu = _implied_prob(mk.get('over_odds')), _implied_prob(mk.get('under_odds'))
-        mkt_over = io / (io + iu) if (io + iu) else 0.5
-        t_edge = model_over - mkt_over
-        block['edge_total_side'] = 'Over' if t_edge >= 0 else 'Under'
-        block['edge_total_pct'] = round(abs(t_edge) * 100)
-    else:
-        block['edge_total_side'], block['edge_total_pct'] = '', None
-
-    # Run-line edge — model P(favorite wins by >=2) vs the market (-110 -> 50%).
-    if margin:
-        p_cover = sum(p for d, p in margin.items() if (d >= 2 if fav_home else d <= -2))
-        rl_edge = p_cover - 0.5
-        fav, dog = (ha, aa) if fav_home else (aa, ha)
-        block['edge_rl_side'] = f"{fav} -1.5" if rl_edge >= 0 else f"{dog} +1.5"
-        block['edge_rl_pct'] = round(abs(rl_edge) * 100)
-    else:
-        block['edge_rl_side'], block['edge_rl_pct'] = '', None
     return block
 
 
-_EDGE_MARKETS = (('ML', 'edge_ml_side', 'edge_ml_pct'),
-                 ('Total', 'edge_total_side', 'edge_total_pct'),
-                 ('Run line', 'edge_rl_side', 'edge_rl_pct'))
+_EDGE_MARKETS = (('ML', 'edge_ml_side', 'edge_ml_pct'),)
 
 
 def _best_edge(market: dict) -> dict | None:
@@ -389,7 +295,7 @@ def _best_edge(market: dict) -> dict | None:
 
 
 def _top_edges(games: list, n: int = 6) -> list[dict]:
-    """Flatten every game's ML/total/run-line edges, rank by %, return the top n.
+    """Flatten every game's moneyline edge, rank by %, return the top n.
 
     Each entry: {game_id, matchup, market, side, pct}. Games without a market
     block (no ESPN odds) are skipped."""
@@ -416,13 +322,6 @@ def run_daily_simulation(sim_date: str = None) -> list[dict]:
     market = get_market_odds(sim_date)
     schedule = get_schedule(sim_date)
 
-    # Snapshot the market total line each Total pick is graded against. Write-once,
-    # so the first (closing-ish) line captured for a date's games is preserved.
-    try:
-        _pred.save_market_lines(_DATA_DIR, sim_date, _market_total_lines(schedule, market))
-    except Exception:
-        pass
-
     results = []
     for game in schedule:
         try:
@@ -438,16 +337,6 @@ def run_daily_simulation(sim_date: str = None) -> list[dict]:
     results.sort(key=lambda g: g.get('game_datetime') or '~')
 
     return results
-
-
-def _market_total_lines(games: list, market: dict) -> dict:
-    """Map game_id -> market total line, for games with a priced market total."""
-    out = {}
-    for g in games:
-        mk = market.get(market_key(g.get('away_name', ''), g.get('home_name', '')))
-        if mk and mk.get('n_books', 0) > 0 and mk.get('total') is not None:
-            out[g['game_id']] = mk['total']
-    return out
 
 
 def _inning_scoring_lines(g: dict) -> str:
@@ -499,15 +388,12 @@ def _game_chat_line(g: dict) -> str:
     if inn:
         parts.append(inn)
     if m:
-        parts.append(f"model fair lines: total {m.get('total_line')}, run line {m.get('spread_home')} (home)/"
-                     f"{m.get('spread_away')} (away), ML {aw} {m.get('ml_away')}/{hw} {m.get('ml_home')};")
+        parts.append(f"model fair moneyline: {aw} {m.get('ml_away')}/{hw} {m.get('ml_home')};")
     if mk:
         parts.append(
-            f"ESPN avg line ({mk.get('n_books', 0)} books): total {mk.get('total')}, "
-            f"ML {aw} {mk.get('ml_away')}/{hw} {mk.get('ml_home')}; "
-            f"model edges vs market: ML {mk.get('edge_ml_side')} +{mk.get('edge_ml_pct')}%, "
-            f"total {mk.get('edge_total_side')} +{mk.get('edge_total_pct')}%, "
-            f"run line {mk.get('edge_rl_side')} +{mk.get('edge_rl_pct')}%."
+            f"ESPN avg moneyline ({mk.get('n_books', 0)} books): "
+            f"{aw} {mk.get('ml_away')}/{hw} {mk.get('ml_home')}; "
+            f"model moneyline edge vs market: {mk.get('edge_ml_side')} +{mk.get('edge_ml_pct')}%."
         )
     return " ".join(p for p in parts if p)
 
@@ -525,8 +411,9 @@ def _build_chat_context(focus_game_id: int = None) -> str:
         f"team wOBA/OPS, bullpen, park factors, elevation, weather, handedness, rest, "
         f"recent form), trained on {meta.get('n_games', '?')} completed 2024–2026 games. "
         f"Win prob + run totals come from a 1000-run Monte Carlo (negative-binomial) per game; "
-        f"the inning breakdown is a separate classifier. Betting lines are the model's fair "
-        f"(no-vig) implied lines; 'edges' compare them to the average ESPN sportsbook line.",
+        f"the inning breakdown is a separate classifier. The app supports the moneyline market "
+        f"only: the fair (no-vig) moneyline is the model's win%, and the 'edge' compares it to "
+        f"the average ESPN sportsbook moneyline.",
     ]
     games = [g for g in _simulation_cache if not g.get('error')]
     if games:
@@ -602,10 +489,8 @@ def compare_date(result_date: str, version: str = None) -> dict:
     cores = _pred.load_prediction(_DATA_DIR, version, result_date) or []
 
     actuals = _actuals_for_date(result_date)
-    market_lines = _pred.load_market_lines(_DATA_DIR, result_date)
     results = []
     correct = 0
-    spread_correct = spread_n = total_correct = total_n = 0
     for core in cores:
         game = actuals.get(core.get('game_id'))
         if not game:
@@ -617,23 +502,13 @@ def compare_date(result_date: str, version: str = None) -> dict:
         predicted_home_won = core.get('home_win_pct', 50.0) > 50.0
         home_err = abs(core.get('median_home_score', 0) - actual_home)
         away_err = abs(core.get('median_away_score', 0) - actual_away)
-        if actual_home_won == predicted_home_won:
+        winner_correct = actual_home_won == predicted_home_won
+        if winner_correct:
             correct += 1
         home_meta = get_team_meta(game['home_id'])
         away_meta = get_team_meta(game['away_id'])
-        # Market-by-market grade: ML (== winner_correct), Spread (run-line +/-1.5),
-        # Total (vs the captured market line; N/A when no line was snapshotted).
-        # Also returns the pick labels (what the model predicted) for display.
-        total_line = market_lines.get(str(core.get('game_id')), {}).get('total_line')
-        marks = _grading.grade_markets(
-            core, actual_home, actual_away, total_line,
-            home_abbr=home_meta.get('abbr', 'HOME'), away_abbr=away_meta.get('abbr', 'AWAY'))
-        if marks['spread'] is not None:
-            spread_n += 1
-            spread_correct += 1 if marks['spread'] else 0
-        if marks['total'] not in (None, 'push'):
-            total_n += 1
-            total_correct += 1 if marks['total'] else 0
+        # ML is the only graded market; its pick label is the favored side.
+        ml_pick = home_meta.get('abbr', 'HOME') if predicted_home_won else away_meta.get('abbr', 'AWAY')
         results.append({
             **game,
             **core,
@@ -643,14 +518,10 @@ def compare_date(result_date: str, version: str = None) -> dict:
             'predicted_home_won': predicted_home_won,
             'home_score_err': round(home_err, 1),
             'away_score_err': round(away_err, 1),
-            'winner_correct': actual_home_won == predicted_home_won,
-            'ml_correct': marks['ml'],
-            'spread_correct': marks['spread'],
-            'total_correct': marks['total'],
-            'ml_pick': marks['ml_pick'],
-            'spread_pick': marks['spread_pick'],
-            'total_pick': marks['total_pick'],
-            'total_line': total_line,
+            'winner_correct': winner_correct,
+            # ML is the only graded market; its pick is the winner pick.
+            'ml_correct': winner_correct,
+            'ml_pick': ml_pick,
             'home_logo': home_meta['logo_url'],
             'away_logo': away_meta['logo_url'],
             'home_color': home_meta['primary'],
@@ -665,8 +536,6 @@ def compare_date(result_date: str, version: str = None) -> dict:
     avg_err = round(
         sum(r['home_score_err'] + r['away_score_err'] for r in scored) / (2 * len(scored)), 2
     ) if scored else None
-    spread_accuracy = round(spread_correct / spread_n * 100, 1) if spread_n else None
-    total_accuracy = round(total_correct / total_n * 100, 1) if total_n else None
 
     return {
         'result_date': result_date,
@@ -674,10 +543,6 @@ def compare_date(result_date: str, version: str = None) -> dict:
         'n_completed': n,
         'winner_accuracy': accuracy,
         'ml_accuracy': accuracy,
-        'spread_accuracy': spread_accuracy,
-        'spread_graded': spread_n,
-        'total_accuracy': total_accuracy,
-        'total_graded': total_n,
         'avg_score_err': avg_err,
     }
 
@@ -685,18 +550,6 @@ def compare_date(result_date: str, version: str = None) -> dict:
 def _get_results_for_date(date_str: str) -> dict:
     """Results for a past date by joining the frozen prediction with actuals."""
     return compare_date(date_str)
-
-
-def _weighted_market_accuracy(daily: list, acc_key: str, n_key: str):
-    """Pool a per-day market accuracy by its graded count -> (accuracy, total_n).
-
-    Returns (None, 0) when nothing was graded for the market across the window.
-    """
-    n = sum(r.get(n_key, 0) for r in daily)
-    if not n:
-        return None, 0
-    correct = sum(round((r.get(acc_key) or 0) / 100 * r.get(n_key, 0)) for r in daily)
-    return round(correct / n * 100, 1), n
 
 
 def _aggregate_days(n_days: int, version: str = None) -> dict:
@@ -745,18 +598,12 @@ def _aggregate_days(n_days: int, version: str = None) -> dict:
     avg_err = round(
         sum(r['avg_score_err'] for r in scored) / len(scored), 2
     ) if scored else None
-    spread_acc, spread_n = _weighted_market_accuracy(daily, 'spread_accuracy', 'spread_graded')
-    total_acc, total_n = _weighted_market_accuracy(daily, 'total_accuracy', 'total_graded')
 
     result = {
         'total_games': total_games,
         'days_with_games': len(daily),
         'winner_accuracy': accuracy,
         'ml_accuracy': accuracy,
-        'spread_accuracy': spread_acc,
-        'spread_graded': spread_n,
-        'total_accuracy': total_acc,
-        'total_graded': total_n,
         'avg_score_err': avg_err,
         'daily': daily,
     }
@@ -794,17 +641,11 @@ def _version_summary(version: str) -> dict:
     accuracy = round(correct / total * 100, 1) if total else 0
     scored = [r for r in daily if r.get('avg_score_err') is not None]
     avg_err = round(sum(r['avg_score_err'] for r in scored) / len(scored), 2) if scored else None
-    spread_acc, spread_n = _weighted_market_accuracy(daily, 'spread_accuracy', 'spread_graded')
-    total_acc, total_n = _weighted_market_accuracy(daily, 'total_accuracy', 'total_graded')
     result = {
         'total_games': total,
         'days_with_games': len(daily),
         'winner_accuracy': accuracy,
         'ml_accuracy': accuracy,
-        'spread_accuracy': spread_acc,
-        'spread_graded': spread_n,
-        'total_accuracy': total_acc,
-        'total_graded': total_n,
         'avg_score_err': avg_err,
         'daily': daily,
     }
@@ -920,8 +761,6 @@ def create_app(testing: bool = False) -> Flask:
                 'total_games': s['total_games'],
                 'days_with_games': s['days_with_games'],
                 'winner_accuracy': s['winner_accuracy'],
-                'spread_accuracy': s.get('spread_accuracy'),
-                'total_accuracy': s.get('total_accuracy'),
                 'avg_score_err': s['avg_score_err'],
                 'is_current': v['version'] == current,
             })
