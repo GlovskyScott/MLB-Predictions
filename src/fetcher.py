@@ -14,6 +14,8 @@ _DATA_RELEASE_TAG = "data-cache"
 _DATA_RELEASE_ASSET = "data_cache.tar.gz"
 _MODEL_RELEASE_TAG = "latest"
 _MODEL_PKLS = ["model_win.pkl", "model_runs_home.pkl", "model_runs_away.pkl", "model_inning.pkl"]
+_PREDICTIONS_RELEASE_TAG = "prediction-archive"
+_PREDICTIONS_RELEASE_ASSET = "predictions.tar.gz"
 
 
 def bootstrap_model_cache(repo: str = "jackleh/MLB-Predictions") -> None:
@@ -62,6 +64,33 @@ def bootstrap_data_cache(repo: str = "jackleh/MLB-Predictions") -> None:
         print("Data cache restored.")
     except Exception as e:
         print(f"Could not download data cache ({e}). Will fetch fresh data instead.")
+
+
+def bootstrap_predictions_cache(repo: str = "jackleh/MLB-Predictions") -> None:
+    """Download and extract the versioned prediction archive if absent.
+
+    Restores data/predictions/ (all model versions + versions.json) so the
+    archive pages and historical accuracy work without re-simulating. Safe to
+    call repeatedly — a no-op once the local store exists.
+    """
+    sentinel = _DATA_DIR / "predictions" / "versions.json"
+    if sentinel.exists():
+        return
+    import subprocess, tempfile, tarfile
+    print("Prediction archive not found — downloading from GitHub release...")
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(
+                ["gh", "release", "download", _PREDICTIONS_RELEASE_TAG,
+                 "-R", repo, "-D", tmp, "--pattern", _PREDICTIONS_RELEASE_ASSET],
+                check=True, capture_output=True,
+            )
+            asset_path = Path(tmp) / _PREDICTIONS_RELEASE_ASSET
+            with tarfile.open(asset_path, "r:gz") as tf:
+                tf.extractall(_DATA_DIR / "predictions")
+        print("Prediction archive restored.")
+    except Exception as e:
+        print(f"Could not download prediction archive ({e}). Predictions will be generated fresh.")
 
 
 OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"

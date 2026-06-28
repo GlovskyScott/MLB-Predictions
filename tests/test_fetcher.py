@@ -217,3 +217,12 @@ def test_get_weather_historical_returns_dict(mocker):
     result = get_weather_historical(lat=40.8296, lon=-73.9262, game_date='2026-04-01', game_hour=19)
     assert isinstance(result, dict)
     assert 'temperature_f' in result
+
+
+def test_bootstrap_predictions_cache_noop_when_present(tmp_path, mocker):
+    mocker.patch('src.fetcher._DATA_DIR', tmp_path)
+    (tmp_path / 'predictions').mkdir()
+    (tmp_path / 'predictions' / 'versions.json').write_text('[]')
+    run = mocker.patch('subprocess.run')
+    fetcher.bootstrap_predictions_cache()
+    run.assert_not_called()  # store present -> no download

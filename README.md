@@ -197,6 +197,25 @@ Fetches real temperature, wind, precipitation, and humidity for every completed 
 
 ---
 
+## Model versioning & the archive
+
+Predictions are **immutable artifacts keyed by model version**. A version id is a
+hash of the four model `.pkl` files, so any retrain produces a new version.
+
+- Within a version, a date's prediction is generated once, frozen to
+  `data/predictions/<version>/<date>.json`, and served verbatim forever after —
+  the dashboard never re-simulates a stored date.
+- A retrain forks a **new** version (new current model) and leaves the previous
+  version's predictions intact as an **archive**. The new version's dates are
+  re-simulated in the background.
+- Accuracy is computed by joining a frozen prediction with the actual final
+  score, so a model's historical accuracy never changes unless its version does.
+
+Browse versions at **`/archive`** (click ▤ Archive in the header): each model
+version with its rollup winner-accuracy and average score error, drilling into
+per-date predictions vs actuals. `data/predictions/versions.json` is the registry
+of known versions.
+
 ## Data releases
 
 Model pkl files and the data cache are stored as GitHub release assets (excluded from git via `.gitignore`).
@@ -205,12 +224,24 @@ Model pkl files and the data cache are stored as GitHub release assets (excluded
 |---|---|
 | `latest` | `model_win.pkl`, `model_runs_home.pkl`, `model_runs_away.pkl`, `model_inning.pkl` |
 | `data-cache` | `data_cache.tar.gz` — all `data/` files except pkls and results_cache |
+| `prediction-archive` | `predictions.tar.gz` — the versioned prediction store (`data/predictions/`): frozen per-game predictions for every trained model version, plus `versions.json` |
 
 To upload a new data cache after updating linescores, splits, or weather:
 
 ```bash
 bash scripts/upload_data_release.sh
 ```
+
+To publish the prediction archive after a retrain (which forks a new model
+version and archives the previous one):
+
+```bash
+bash scripts/upload_predictions_release.sh
+```
+
+On first boot the app restores this archive via `bootstrap_predictions_cache()`,
+so the **Archive** page (per–model-version historical accuracy) works without
+re-simulating. See [Model versioning & the archive](#model-versioning--the-archive).
 
 ---
 

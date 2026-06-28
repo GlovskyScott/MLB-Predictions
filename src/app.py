@@ -10,7 +10,7 @@ from src.fetcher import (
     get_schedule, get_pitching_stats, get_team_batting_stats,
     get_bullpen_stats, get_season_schedule, get_weather_for_game, get_game_linescore,
     get_game_lineup, bootstrap_data_cache, bootstrap_model_cache,
-    refresh_schedule_date,
+    bootstrap_predictions_cache, refresh_schedule_date,
 )
 from src.features import build_game_features, build_inning_feature_row, _NEUTRAL_WEATHER, FEATURE_VERSION
 from src.model import (
@@ -647,6 +647,7 @@ def create_app(testing: bool = False) -> Flask:
     if not testing:
         bootstrap_data_cache()
         bootstrap_model_cache()
+        bootstrap_predictions_cache()
         threading.Thread(target=_backfill_results_cache, daemon=True).start()
 
     @app.route('/')
