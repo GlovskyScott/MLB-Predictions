@@ -1,891 +1,410 @@
-{% macro market_stats(s) -%}
-{% set ml = s.get('ml_accuracy', s.get('winner_accuracy')) %}
-<div class="summary-stat"><div class="s-label" title="Moneyline: % of games the predicted winner was correct">ML</div><div class="s-value {% if ml is not none and ml >= 55 %}good{% else %}neutral{% endif %}">{% if ml is not none %}{{ ml }}%{% else %}—{% endif %}</div></div>
-{%- endmacro %}
-{% macro pick_row(label, pick, result, na_title) -%}
-<div class="pick-row"><span class="pick-mkt">{{ label }}</span>
-{%- if pick %}<span class="pick-lbl">{{ pick }}</span>
-  {%- if result == 'push' %} <span class="pick-res na">P</span>
-  {%- elif result == True %} <span class="pick-res correct">✓</span>
-  {%- elif result == False %} <span class="pick-res wrong">✗</span>
-  {%- else %} <span class="pick-res na" title="{{ na_title }}">·</span>{% endif -%}
-{%- else %}<span class="pick-na" title="{{ na_title }}">—</span>{% endif -%}
-</div>
-{%- endmacro %}
-{% macro inn_bar(cell, color) -%}
-<div class="inn-bar" title="0 runs: {{ cell[0] }}% · 1 run: {{ cell[1] }}% · 2+ runs: {{ cell[2] }}%"><span class="seg0" style="height:{{ cell[0] }}%"></span><span class="seg1" style="height:{{ cell[1] }}%"></span><span class="seg2" style="height:{{ cell[2] }}%"></span></div>
-<div class="inn-score-pct" style="color:{{ color }};">{{ (cell[1] + cell[2]) | round | int }}%</div>
-{%- endmacro %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MLB Simulator — {{ sim_date }}</title>
-    <script src="/static/chart.umd.min.js"></script>
-    <script src="/static/charts.js"></script>
-    <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a0a; color: #e8e8e8; }
-
-        header { background: #111; padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #222; }
-        .date-badge { font-size: 11px; color: #666; margin-top: 1px; }
-        .header-actions { display: flex; gap: 8px; align-items: center; }
-        .btn { border: none; padding: 6px 12px; border-radius: 5px; cursor: pointer; font-size: 12px; font-weight: 600; }
-        .btn-primary { background: #1a6fd4; color: white; }
-        .btn-secondary { background: #2a2a2a; color: #ccc; }
-
-        /* ── Two-column layout ── */
-        .dashboard { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; max-width: 1500px; margin: 0 auto; padding: 16px; align-items: start; }
-        .col-header { font-size: 11px; font-weight: 700; color: #555; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid #1e1e1e; }
-        .row-edge td { color: #5dd47e; font-weight: 700; border-top: 1px solid #1c1c1c; }
-        .row-edge td:first-child { border-left-color: #2f8f4f; color: #5dd47e; }
-        .row-edge .odds-team { color: #5dd47e; }
-
-        /* ── Game cards ── */
-        .game-card { background: #141414; border: 1px solid #222; border-radius: 10px; overflow: hidden; margin-bottom: 12px; }
-        .card-matchup { display: flex; align-items: center; padding: 10px 12px; min-height: 58px; }
-        .team-side { flex: 1; display: flex; align-items: center; gap: 8px; }
-        .team-side.home { flex-direction: row-reverse; }
-        .team-logo { width: 36px; height: 36px; object-fit: contain; flex-shrink: 0; }
-        .team-info { display: flex; flex-direction: column; gap: 3px; }
-        .team-side.home .team-info { align-items: flex-end; }
-        .team-abbr { font-weight: 900; font-size: 12px; color: #fff; line-height: 1.2; }
-        .team-role { font-size: 10px; color: #555; }
-        .score-center { text-align: center; padding: 0 10px; flex-shrink: 0; }
-        .score-nums { font-size: 22px; font-weight: 900; letter-spacing: 2px; color: #fff; }
-        .score-label { font-size: 9px; color: #444; margin-top: 1px; }
-        .card-prob { padding: 0 12px 8px; }
-        .odds-block { margin: 0 12px 8px; background: #0e0e0e; border: 1px solid #1e1e1e; border-radius: 6px; padding: 4px 8px; }
-        .odds-table { width: 100%; border-collapse: collapse; font-size: 11px; }
-        .odds-table th { font-size: 9px; font-weight: 700; color: #555; text-transform: uppercase; letter-spacing: 0.5px; text-align: left; padding: 3px 4px; }
-        .odds-table td { padding: 3px 5px; white-space: nowrap; border-left: 2px solid transparent; }
-        .odds-team { font-weight: 800; }
-        /* Model rows = blue, ESPN row = amber, so the two sources read at a glance */
-        .row-model td { color: #aacdff; }
-        .row-model td:first-child { border-left-color: #4a86e0; }
-        .row-model .odds-team { color: #eaf2ff; }
-        .row-espn td { color: #e6ad62; border-top: 1px solid #1c1c1c; }
-        .row-espn td:first-child { border-left-color: #e6ad62; }
-        .row-espn .odds-team { color: #e6ad62; }
-        .odds-legend { display: flex; gap: 12px; margin-top: 4px; font-size: 9px; text-transform: uppercase; letter-spacing: .04em; }
-        .okey { display: inline-flex; align-items: center; }
-        .okey::before { content: ''; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; }
-        .okey-model { color: #7fb0e8; } .okey-model::before { background: #4a86e0; }
-        .okey-espn { color: #e6ad62; } .okey-espn::before { background: #e6ad62; }
-        .okey-edge { color: #5dd47e; } .okey-edge::before { background: #5dd47e; }
-        .card-detail { border-top: 1px solid #1e1e1e; padding: 10px 12px; }
-        .detail-meta { display: flex; justify-content: space-between; font-size: 10px; color: #666; margin-bottom: 8px; gap: 4px; flex-wrap: wrap; }
-        .chart-container { height: 220px; position: relative; margin-bottom: 6px; }
-        .subsection-label { font-size: 9px; font-weight: 700; color: #444; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 6px; }
-
-        /* Innings table */
-        .inn-table { width: 100%; border-collapse: collapse; font-size: 11px; margin: 6px 0 12px; }
-        .inn-table th { text-align: center; padding: 4px 2px; color: #444; font-weight: 700; font-size: 10px; border: 1px solid #1e1e1e; background: #0e0e0e; }
-        .inn-table td { text-align: center; padding: 5px 3px; border: 1px solid #1e1e1e; vertical-align: middle; }
-        .inn-table .inn-lbl-cell { text-align: left; font-weight: 700; font-size: 10px; padding: 4px 8px; white-space: nowrap; border: 1px solid #1e1e1e; background: #0e0e0e; cursor: default; }
-        .inn-score-pct { font-size: 11px; font-weight: 700; line-height: 1.3; }
-        .inn-score-avg { font-size: 9px; color: #555; }
-        .inn-bar { width: 16px; height: 38px; margin: 0 auto 3px; display: flex; flex-direction: column-reverse; border-radius: 2px; overflow: hidden; background: #1c1c1c; }
-        .inn-bar span { display: block; width: 100%; }
-        .inn-bar .seg0 { background: #2c2c2c; }
-        .inn-bar .seg1 { background: #4a90d9; }
-        .inn-bar .seg2 { background: #e8a33d; }
-        .inn-legend { font-size: 10px; color: #777; margin: 2px 0 10px; display: flex; gap: 12px; }
-        .inn-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
-        .inn-legend .seg0 { background: #2c2c2c; } .inn-legend .seg1 { background: #4a90d9; } .inn-legend .seg2 { background: #e8a33d; }
-
-        /* ── Results panels ── */
-        .results-panel { background: #141414; border: 1px solid #222; border-radius: 10px; overflow: hidden; margin-bottom: 14px; }
-        .panel-header { display: flex; align-items: center; gap: 20px; padding: 10px 14px; background: #1a1a1a; border-bottom: 1px solid #222; flex-wrap: wrap; }
-        .panel-title { font-size: 11px; font-weight: 700; color: #555; text-transform: uppercase; letter-spacing: 1px; }
-        .summary-stat { text-align: center; }
-        .summary-stat .s-label { font-size: 10px; color: #555; text-transform: uppercase; }
-        .summary-stat .s-value { font-size: 20px; font-weight: 800; }
-        .s-value.good { color: #4caf50; }
-        .s-value.neutral { color: #e8e8e8; }
-
-        /* Yesterday game table */
-        .results-table { width: 100%; border-collapse: collapse; font-size: 11px; }
-        .results-table thead th { background: #1a1a1a; padding: 6px 10px; color: #555; text-align: left; white-space: nowrap; border-bottom: 1px solid #222; }
-        .results-table tbody td { padding: 7px 10px; border-top: 1px solid #1a1a1a; vertical-align: middle; }
-        .r-team { display: flex; align-items: center; gap: 5px; }
-        .r-logo { width: 20px; height: 20px; object-fit: contain; }
-        .r-name { font-weight: 700; font-size: 12px; color: #fff; }
-        .actual-score { font-size: 14px; font-weight: 800; }
-        .sub-text { font-size: 10px; color: #555; margin-top: 1px; }
-        .badge { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 10px; font-weight: 700; }
-        .badge.correct { background: #1b4d2e; color: #4caf50; }
-        .badge.wrong { background: #4d1b1b; color: #ef5350; }
-        .badge.push { background: #333; color: #aaa; }
-        .pick-row { display: flex; align-items: center; gap: 6px; line-height: 1.5; white-space: nowrap; }
-        .pick-mkt { font-size: 9px; color: #555; text-transform: uppercase; width: 30px; flex-shrink: 0; }
-        .pick-lbl { font-size: 11px; font-weight: 700; color: #cfd8e8; }
-        .pick-na { color: #555; }
-        .pick-res { font-size: 11px; font-weight: 800; }
-        .pick-res.correct { color: #4caf50; } .pick-res.wrong { color: #ef5350; } .pick-res.na { color: #555; }
-        .err-low { color: #4caf50; font-size: 11px; }
-        .err-mid { color: #ffb300; font-size: 11px; }
-        .err-high { color: #ef5350; font-size: 11px; }
-
-        /* 7-day / 30-day daily breakdown table */
-        .daily-table { width: 100%; border-collapse: collapse; font-size: 11px; }
-        .daily-table thead th { background: #1a1a1a; padding: 6px 10px; color: #555; text-align: left; border-bottom: 1px solid #222; }
-        .daily-table tbody td { padding: 6px 10px; border-top: 1px solid #1a1a1a; }
-        .daily-table .acc-bar-cell { width: 80px; }
-        .acc-bar { height: 6px; border-radius: 3px; background: #222; overflow: hidden; margin-top: 2px; }
-        .acc-bar-fill { height: 100%; border-radius: 3px; }
-
-        .no-games { text-align: center; color: #555; padding: 40px; font-size: 14px; }
-        footer { text-align: center; padding: 20px; color: #333; font-size: 11px; }
-
-        /* ── AI explanation ── */
-        .explain-box { margin-top: 10px; padding: 12px; background: #0e0e0e; border: 1px solid #1e1e1e; border-radius: 6px; font-size: 12px; line-height: 1.7; color: #bbb; white-space: pre-wrap; }
-        .ai-head { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; }
-        .discuss-btn { background: #14283d; color: #6ea3d6; border: 1px solid #234; border-radius: 5px; font-size: 10px; font-weight: 700; padding: 3px 8px; cursor: pointer; }
-        .discuss-btn:hover { background: #1a3551; color: #9ec5ff; }
-        /* Chat assistant */
-        #chat-fab { position: fixed; bottom: 18px; right: 18px; z-index: 60; background: #1a6fd4; color: #fff; border: none; border-radius: 24px; padding: 11px 17px; font-size: 13px; font-weight: 800; cursor: pointer; box-shadow: 0 4px 18px rgba(0,0,0,.55); }
-        .chat-panel { position: fixed; bottom: 18px; right: 18px; z-index: 61; width: 390px; max-width: calc(100vw - 24px); height: 560px; max-height: calc(100vh - 36px); background: #0d0d0d; border: 1px solid #2a2a2a; border-radius: 12px; display: flex; flex-direction: column; box-shadow: 0 10px 34px rgba(0,0,0,.65); }
-        .chat-head { display: flex; justify-content: space-between; align-items: center; padding: 11px 14px; border-bottom: 1px solid #1e1e1e; font-weight: 800; font-size: 13px; color: #eaf2ff; }
-        .chat-x { background: none; border: none; color: #888; cursor: pointer; font-size: 15px; }
-        .chat-focus { padding: 6px 12px; font-size: 11px; color: #6ea3d6; background: #11212f; border-bottom: 1px solid #1e2a36; display: flex; justify-content: space-between; }
-        .chat-clear { background: none; border: none; color: #557; cursor: pointer; font-size: 10px; }
-        .chat-msgs { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 9px; }
-        .chat-msg { font-size: 13px; line-height: 1.55; padding: 8px 11px; border-radius: 9px; max-width: 88%; white-space: pre-wrap; }
-        .chat-user { align-self: flex-end; background: #1a3a5c; color: #eaf2ff; }
-        .chat-bot { align-self: flex-start; background: #161616; border: 1px solid #222; color: #d2d6dc; }
-        .chat-empty { color: #555; font-size: 12px; text-align: center; margin: 24px 10px; line-height: 1.5; }
-        .chat-input { display: flex; gap: 6px; padding: 10px; border-top: 1px solid #1e1e1e; }
-        .chat-input input { flex: 1; background: #161616; border: 1px solid #2a2a2a; border-radius: 8px; padding: 8px 10px; color: #eee; font-size: 13px; }
-        .chat-input button { background: #1a6fd4; color: #fff; border: none; border-radius: 8px; padding: 0 14px; font-weight: 700; cursor: pointer; }
-        .explain-queued { color: #444; font-style: italic; }
-
-        /* ── Games toolbar ── */
-        .games-toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
-        .games-toolbar input, .games-toolbar select { background: #161616; border: 1px solid #2a2a2a; color: #ddd; border-radius: 6px; padding: 6px 9px; font-size: 12px; }
-        .games-toolbar input[type=search] { flex: 1; min-width: 130px; }
-        .tb-btn { background: #2a2a2a; color: #ccc; border: 1px solid #333; border-radius: 6px; padding: 6px 11px; font-size: 12px; font-weight: 600; cursor: pointer; }
-        .tb-btn:hover { background: #333; }
-
-        /* ── Today's Best Edges board ── */
-        .edges-board { background: #101a12; border: 1px solid #1d3322; border-radius: 10px; padding: 8px 10px; margin-bottom: 14px; }
-        .edges-title { font-size: 11px; font-weight: 700; color: #5dd47e; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px; }
-        .edge-row { display: flex; align-items: center; gap: 10px; padding: 5px 4px; border-top: 1px solid #16241a; cursor: pointer; font-size: 12px; }
-        .edge-row:first-of-type { border-top: none; }
-        .edge-row:hover { background: #13241a; }
-        .edge-row .edge-pct { color: #5dd47e; font-weight: 800; min-width: 42px; }
-        .edge-row .edge-desc { color: #cfe9d6; font-weight: 600; flex: 1; }
-        .edge-row .edge-game { color: #6f8f79; font-size: 11px; white-space: nowrap; }
-
-        /* ── Collapsible game cards ── */
-        .card-summary { display: flex; align-items: center; gap: 10px; padding: 10px 12px; cursor: pointer; user-select: none; }
-        .card-summary:hover { background: #181818; }
-        .card-summary .chev { color: #6ea3d6; font-size: 17px; line-height: 1; transition: transform .15s; width: 16px; text-align: center; flex-shrink: 0; }
-        .card-summary:hover .chev { color: #9ec5ff; }
-        .game-card.expanded .card-summary .chev { transform: rotate(90deg); }
-        .sum-match { display: flex; align-items: center; gap: 5px; font-weight: 800; font-size: 13px; color: #fff; flex: 1; min-width: 0; }
-        .sum-logo { width: 20px; height: 20px; object-fit: contain; }
-        .sum-at { color: #555; font-weight: 400; margin: 0 1px; }
-        .sum-win { font-size: 12px; font-weight: 700; color: #aacdff; white-space: nowrap; }
-        .sum-edge { white-space: nowrap; }
-        .sum-edge .edge-badge { background: #14301d; color: #5dd47e; font-size: 10px; font-weight: 800; padding: 2px 7px; border-radius: 4px; }
-        .sum-edge .edge-none { color: #444; font-size: 12px; }
-        .sum-time { font-size: 10px; color: #666; white-space: nowrap; min-width: 58px; text-align: right; }
-        .card-body { display: none; }
-        .game-card.expanded .card-body { display: block; }
-
-        @media (max-width: 900px) { .dashboard { grid-template-columns: 1fr; } }
-        @media (max-width: 600px) {
-            .dashboard { padding: 10px; gap: 12px; }
-            header { flex-wrap: wrap; gap: 8px; }
-            .games-toolbar input[type=search] { flex-basis: 100%; }
-            .games-toolbar select, .tb-btn { flex: 1; }
-            .odds-block { overflow-x: auto; }
-            .inn-table { display: block; overflow-x: auto; white-space: nowrap; }
-            .results-table, .daily-table { display: block; overflow-x: auto; }
-            .sum-time { min-width: auto; }
-        }
-        @media print {
-            body { background: #fff !important; color: #111 !important; }
-            header { background: #fff !important; border-bottom: 1px solid #ccc !important; }
-            .game-card { background: #fff !important; border: 1px solid #ddd !important; box-shadow: none !important; }
-            .card-matchup { background: none !important; }
-            .card-detail { background: #fff !important; border-top: 1px solid #eee !important; }
-            .card-prob { background: #fff !important; }
-            .results-panel { background: #fff !important; border: 1px solid #ddd !important; }
-            .panel-header { background: #f7f7f7 !important; border-bottom: 1px solid #ddd !important; }
-            .panel-title, .s-label, .col-header, .subsection-label, .detail-meta, .team-role, .score-label { color: #555 !important; }
-            .s-value.neutral, .score-nums, .r-name, .team-abbr, .actual-score { color: #111 !important; }
-            .inn-table th, .inn-table .inn-lbl-cell { background: #f7f7f7 !important; color: #555 !important; border-color: #ddd !important; }
-            .inn-table td { border-color: #ddd !important; background: #fff !important; }
-            .inn-score-avg, .inn-either-pct { color: #777 !important; }
-            .results-table thead th, .daily-table thead th { background: #f7f7f7 !important; color: #555 !important; }
-            .results-table tbody td, .daily-table tbody td { border-color: #eee !important; }
-            .sub-text { color: #777 !important; }
-            /* Preserve color only on win probability bars */
-            [id^="prob-"], [id^="prob-"] * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
-            /* Print every game as if fully expanded; hide interactive chrome */
-            .card-body { display: block !important; }
-            .card-summary, .games-toolbar, .header-actions, .discuss-btn, #chat-fab, .chat-panel { display: none !important; }
-            .game-card { break-inside: avoid; }
-            .edges-board { background: #fff !important; border-color: #ccc !important; }
-            .edges-title { color: #2a7a45 !important; }
-            .edge-row { border-color: #eee !important; cursor: default; }
-            .edge-row .edge-desc { color: #222 !important; }
-            .edge-row .edge-game, .edge-row .edge-pct { color: #2a7a45 !important; }
-        }
-    </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MLB Predictions — Edge</title>
+<link rel="preconnect" href="https://a.espncdn.com">
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; -webkit-font-smoothing: antialiased; background: #08090c; color: #eef0f4; }
+  .num { font-variant-numeric: tabular-nums; }
+  .app-scroll::-webkit-scrollbar { width: 0; }
+  .tap { cursor: pointer; transition: background .12s, opacity .12s, color .12s; }
+  .tap:hover { background: #13161d; }
+  img.logo { object-fit: contain; flex-shrink: 0; display: inline-block; vertical-align: middle; }
+  input, button { font-family: inherit; }
+</style>
 </head>
 <body>
+<script id="payload" type="application/json">{{ payload|tojson }}</script>
 
-<header>
-    <div>
-        <div style="font-size:17px;font-weight:700;">MLB Simulator</div>
-        <div class="date-badge">{{ sim_date }}</div>
-    </div>
-    <div class="header-actions">
-        <a href="/archive" class="btn btn-secondary" style="text-decoration:none;display:inline-block;">Archive</a>
-        <form action="/refresh" method="post" style="display:inline">
-            <button class="btn btn-primary" type="submit">Refresh</button>
-        </form>
-        <form action="/retrain" method="post" style="display:inline">
-            <button class="btn btn-secondary" type="submit">Retrain</button>
-        </form>
-    </div>
-</header>
+<div style="min-height:100vh;background:#08090c;display:flex;justify-content:center;">
+  <div class="app-scroll" style="width:100%;max-width:540px;min-height:100vh;background:#0b0d11;border-left:1px solid #15181f;border-right:1px solid #15181f;display:flex;flex-direction:column;">
 
-<div class="dashboard">
-
-<!-- ══════════════ LEFT: TODAY ══════════════ -->
-<div>
-    <div class="col-header">Today's Predictions &middot; {{ results|length }} game(s)</div>
-
-    {% if not results %}
-    <div class="no-games">No games scheduled for {{ sim_date }}.</div>
-    {% else %}
-
-    {% if top_edges %}
-    <div class="edges-board">
-        <div class="edges-title">Today's Best Edges</div>
-        {% for e in top_edges %}
-        <div class="edge-row" onclick="jumpToGame({{ e.game_id }})" title="Jump to {{ e.matchup }}">
-            <span class="edge-pct">+{{ e.pct }}%</span>
-            <span class="edge-desc">{{ e.side }} {{ e.market }}</span>
-            <span class="edge-game">{{ e.matchup }}</span>
+    <!-- HEADER -->
+    <div style="position:sticky;top:0;z-index:20;background:rgba(11,13,17,.86);backdrop-filter:blur(12px);border-bottom:1px solid #161a22;">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 18px 0;">
+        <div style="display:flex;align-items:baseline;gap:9px;">
+          <span style="font:800 18px system-ui;color:#f1f3f6;letter-spacing:-.3px;">MLB Predictions</span>
+          <span id="dateLabel" style="font:500 12px system-ui;color:#646a76;"></span>
         </div>
-        {% endfor %}
-    </div>
-    {% endif %}
-
-    <div class="games-toolbar">
-        <input type="search" id="team-search" placeholder="Search team…" aria-label="Search team">
-        <select id="sort-select" aria-label="Sort games">
-            <option value="time">Sort: First pitch</option>
-            <option value="edge">Sort: Best edge</option>
-            <option value="confidence">Sort: Win confidence</option>
-            <option value="matchup">Sort: Matchup A–Z</option>
-        </select>
-        <select id="filter-select" aria-label="Filter games">
-            <option value="all">All games</option>
-            <option value="edge">Has edge</option>
-        </select>
-        <button class="tb-btn" id="expand-toggle" type="button" onclick="toggleExpandAll()">Expand all</button>
+      </div>
+      <div id="tabs"></div>
     </div>
 
-    <div id="games-list">
-    {% for r in results %}
-    {% if not r.get('error') %}
-    <script>
-    window['cdata_{{ r.game_id }}'] = {
-        home: {{ r.score_distribution.home | tojson }}, away: {{ r.score_distribution.away | tojson }},
-        labels: {{ r.score_distribution.labels | tojson }},
-        homeName: {{ r.home_name | tojson }}, awayName: {{ r.away_name | tojson }},
-        homeColor: {{ r.home_color | tojson }}, awayColor: {{ r.away_color | tojson }},
-        nSims: {{ r.n_simulations }},
-    };
-    </script>
-    {% endif %}
+    <div id="screen"></div>
+  </div>
+</div>
 
-    <div class="game-card{% if r.get('error') %} is-error{% endif %}"
-         {% if not r.get('error') %}id="card-{{ r.game_id }}" data-gameid="{{ r.game_id }}"
-         data-edge="{{ r.best_edge.pct if r.best_edge else 0 }}"
-         data-firstpitch="{{ r.game_datetime or '' }}"
-         data-confidence="{{ r.home_win_pct if r.home_win_pct >= r.away_win_pct else r.away_win_pct }}"
-         data-teams="{{ (r.away_name ~ ' ' ~ r.away_abbr ~ ' ' ~ r.home_name ~ ' ' ~ r.home_abbr) | lower }}"{% endif %}>
-    {% if r.get('error') %}
-        <div style="padding:12px;color:#e46a6a;font-size:12px;">{{ r.away_name }} @ {{ r.home_name }}<br><small>{{ r.error }}</small></div>
-    {% else %}
-        {% set fav_home = r.home_win_pct >= r.away_win_pct %}
-        <div class="card-summary" onclick="toggleCard({{ r.game_id }})">
-            <span class="chev">▸</span>
-            <span class="sum-match">
-                <img class="sum-logo" src="{{ r.away_logo }}" alt="" loading="lazy">{{ r.away_abbr }}
-                <span class="sum-at">@</span>
-                <img class="sum-logo" src="{{ r.home_logo }}" alt="" loading="lazy">{{ r.home_abbr }}
-            </span>
-            <span class="sum-win">{{ r.home_abbr if fav_home else r.away_abbr }} {{ (r.home_win_pct if fav_home else r.away_win_pct) | round | int }}%</span>
-            <span class="sum-edge">{% if r.best_edge %}<span class="edge-badge">{{ r.best_edge.side }} {{ r.best_edge.market }} +{{ r.best_edge.pct }}%</span>{% else %}<span class="edge-none">—</span>{% endif %}</span>
-            <span class="sum-time game-time" data-utc="{{ r.game_datetime }}"></span>
-        </div>
-        <div class="card-body">
-        <div class="card-matchup"
-             style="background:linear-gradient(135deg,{{ r.away_color }}20 0%,#141414 38%,#141414 62%,{{ r.home_color }}20 100%);">
-            <div class="team-side away">
-                <img class="team-logo" src="{{ r.away_logo }}" alt="{{ r.away_name }}" loading="lazy">
-                <div class="team-info">
-                    <span class="team-abbr">{{ r.away_name }}</span>
-                    <span class="team-role">Away</span>
-                </div>
-            </div>
-            <div class="score-center">
-                <div class="score-nums" title="Most common final score across {{ r.n_simulations }} simulations">{{ r.modal_away_score }}&nbsp;—&nbsp;{{ r.modal_home_score }}</div>
-                <div class="score-label">predicted</div>
-                {% if r.game_datetime %}
-                <div class="game-time" data-utc="{{ r.game_datetime }}" style="font-size:10px;color:#555;margin-top:3px;"></div>
-                {% endif %}
-            </div>
-            <div class="team-side home">
-                <img class="team-logo" src="{{ r.home_logo }}" alt="{{ r.home_name }}" loading="lazy">
-                <div class="team-info">
-                    <span class="team-abbr">{{ r.home_name }}</span>
-                    <span class="team-role">Home</span>
-                </div>
-            </div>
-        </div>
-
-        <div class="card-prob" id="prob-{{ r.game_id }}"></div>
-        <script>
-        renderWinProbBar('prob-{{ r.game_id }}',
-            {{ r.home_win_pct }}, {{ r.away_win_pct }},
-            {{ r.home_name | tojson }}, {{ r.away_name | tojson }},
-            {{ r.away_color | tojson }}, {{ r.home_color | tojson }});
-        </script>
-
-        {% if r.lines %}
-        <div class="odds-block">
-            <table class="odds-table">
-                <tr class="odds-head"><th></th><th>Moneyline</th></tr>
-                <tr class="row-model">
-                    <td class="odds-team">{{ r.away_abbr }}</td>
-                    <td>{{ r.lines.ml_away }}</td>
-                </tr>
-                <tr class="row-model">
-                    <td class="odds-team">{{ r.home_abbr }}</td>
-                    <td>{{ r.lines.ml_home }}</td>
-                </tr>
-                {% if r.market %}
-                <tr class="row-espn" title="Average sportsbook line ({{ r.market.n_books }} book{{ 's' if r.market.n_books != 1 }})">
-                    <td class="odds-team">ESPN</td>
-                    <td>{{ r.away_abbr }} {{ r.market.ml_away }} · {{ r.home_abbr }} {{ r.market.ml_home }}</td>
-                </tr>
-                <tr class="row-edge" title="Model edge = model probability − market implied probability, on the side the model favors">
-                    <td class="odds-team">Edge</td>
-                    <td>{{ r.market.edge_ml_side }} +{{ r.market.edge_ml_pct }}%</td>
-                </tr>
-                {% endif %}
-            </table>
-            <div class="odds-legend"><span class="okey okey-model">Model</span>{% if r.market %}<span class="okey okey-espn">ESPN avg</span><span class="okey okey-edge">Edge</span>{% endif %}</div>
-        </div>
-        {% endif %}
-
-        <div class="card-detail">
-            <div class="detail-meta">
-                <span title="Away starting pitcher">SP: <strong>{{ r.away_pitcher }}</strong></span>
-                <span>{% if r.weather %}{% if r.weather.is_dome %}Dome · {{ r.venue_name }} · {{ r.elevation_ft }} ft{% else %}{{ r.weather.temperature_f|round|int }}°F · {{ r.weather.wind_speed_mph|round|int }} mph · {{ r.weather.humidity_pct|default(50)|round|int }}% RH · {{ r.venue_name }} · {{ r.elevation_ft }} ft{% endif %}{% else %}{{ r.venue_name }} · {{ r.elevation_ft }} ft{% endif %}</span>
-                <span title="Home starting pitcher">SP: <strong>{{ r.home_pitcher }}</strong></span>
-            </div>
-
-            <div class="subsection-label">Inning Breakdown — Run Distribution P(0 / 1 / 2+)</div>
-            <table class="inn-table">
-                <thead>
-                    <tr>
-                        <th></th>
-                        {% for n in range(1,10) %}<th>{{ n }}</th>{% endfor %}
-                    </tr>
-                </thead>
-                <tbody>
-                    {% if r.away_innings_dist and r.home_innings_dist %}
-                    <tr>
-                        <td class="inn-lbl-cell" style="color:{{ r.away_bar_color }};" title="{{ r.away_name }} — P(0 / 1 / 2+ runs) per inning">Away</td>
-                        {% for cell in r.away_innings_dist %}<td>{{ inn_bar(cell, r.away_bar_color) }}</td>{% endfor %}
-                    </tr>
-                    <tr>
-                        <td class="inn-lbl-cell" style="color:{{ r.home_bar_color }};" title="{{ r.home_name }} — P(0 / 1 / 2+ runs) per inning">Home</td>
-                        {% for cell in r.home_innings_dist %}<td>{{ inn_bar(cell, r.home_bar_color) }}</td>{% endfor %}
-                    </tr>
-                    {% if r.combined_innings_dist %}
-                    <tr>
-                        <td class="inn-lbl-cell" style="color:#888;" title="Both teams — P(0 / 1 / 2+ combined runs); % = P(any team scores)">Both</td>
-                        {% for cell in r.combined_innings_dist %}<td>{{ inn_bar(cell, '#aaa') }}</td>{% endfor %}
-                    </tr>
-                    {% endif %}
-                    {% else %}
-                    <tr>
-                        <td class="inn-lbl-cell" style="color:{{ r.away_bar_color }};" title="{{ r.away_name }}">Away</td>
-                        {% for i in range(9) %}
-                        {% set pct = r.away_innings_scoring_pct[i] %}
-                        <td><div class="inn-score-pct" style="color:{{ r.away_bar_color }};">{{ pct }}%</div></td>
-                        {% endfor %}
-                    </tr>
-                    <tr>
-                        <td class="inn-lbl-cell" style="color:{{ r.home_bar_color }};" title="{{ r.home_name }}">Home</td>
-                        {% for i in range(9) %}
-                        {% set pct = r.home_innings_scoring_pct[i] %}
-                        <td><div class="inn-score-pct" style="color:{{ r.home_bar_color }};">{{ pct }}%</div></td>
-                        {% endfor %}
-                    </tr>
-                    {% endif %}
-                </tbody>
-            </table>
-            {% if r.away_innings_dist %}
-            <div class="inn-legend">
-                <span><i class="seg0"></i>0 runs</span><span><i class="seg1"></i>1 run</span><span><i class="seg2"></i>2+ runs</span>
-                <span style="color:#666">· % = P(scores)</span>
-            </div>
-            {% endif %}
-
-            <div class="subsection-label" style="margin-top:10px;">Score Probability — Likelihood of Each Final Run Total Across Simulations</div>
-            <div class="chart-container"><canvas id="chart-{{ r.game_id }}"></canvas></div>
-
-            <div class="ai-head">
-                <span class="subsection-label" style="margin:0;">AI Analysis</span>
-                <button class="discuss-btn" type="button"
-                        onclick="discussGame({{ r.game_id }}, '{{ r.away_abbr }} @ {{ r.home_abbr }}')">Discuss</button>
-            </div>
-            <div class="explain-box" id="explain-{{ r.game_id }}"><span class="explain-queued">In queue for analysis…</span></div>
-
-            {% if r.lineup and (r.lineup.get('home') or r.lineup.get('away')) %}
-            <div class="subsection-label" style="margin-top:10px;">Lineup</div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:11px;">
-                <div>
-                    <div style="font-size:9px;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:.6px;margin-bottom:4px;">{{ r.away_name }} (Away)</div>
-                    {% for name in r.lineup.get('away', []) %}
-                    <div style="padding:2px 0;color:#ccc;border-bottom:1px solid #1a1a1a;">
-                        <span style="color:#444;margin-right:5px;font-size:10px;">{{ loop.index }}</span>{{ name }}
-                    </div>
-                    {% endfor %}
-                </div>
-                <div>
-                    <div style="font-size:9px;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:.6px;margin-bottom:4px;">{{ r.home_name }} (Home)</div>
-                    {% for name in r.lineup.get('home', []) %}
-                    <div style="padding:2px 0;color:#ccc;border-bottom:1px solid #1a1a1a;">
-                        <span style="color:#444;margin-right:5px;font-size:10px;">{{ loop.index }}</span>{{ name }}
-                    </div>
-                    {% endfor %}
-                </div>
-            </div>
-            {% endif %}
-        </div><!-- /card-detail -->
-        </div><!-- /card-body -->
-    {% endif %}
+<!-- AI CHAT -->
+<button id="fab" class="tap" style="position:fixed;right:24px;bottom:24px;z-index:80;display:flex;align-items:center;gap:7px;background:#3b82f6;color:#fff;border:none;border-radius:24px;padding:12px 18px;font:700 13px system-ui;box-shadow:0 6px 22px rgba(0,0,0,.5);">Ask AI</button>
+<div id="chatWrap" style="display:none;">
+  <div id="chatBackdrop" style="position:fixed;inset:0;z-index:90;background:rgba(0,0,0,.45);"></div>
+  <div style="position:fixed;left:50%;bottom:0;transform:translateX(-50%);width:100%;max-width:540px;height:80vh;z-index:91;background:#0b0d11;border:1px solid #1e222b;border-radius:18px 18px 0 0;display:flex;flex-direction:column;box-shadow:0 -12px 40px rgba(0,0,0,.55);">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:15px 18px;border-bottom:1px solid #161a22;">
+      <div style="display:flex;align-items:baseline;gap:8px;">
+        <span style="font:800 14px system-ui;color:#f1f3f6;">Ask Edge</span>
+        <span style="font:500 11px system-ui;color:#646a76;">AI analyst</span>
+      </div>
+      <div id="chatClose" class="tap" style="font:600 20px system-ui;color:#8a909c;line-height:1;padding:0 4px;">×</div>
     </div>
-    {% endfor %}
-    </div><!-- /games-list -->
-    {% endif %}
-</div><!-- /left -->
-
-<!-- ══════════════ RIGHT: RESULTS ══════════════ -->
-<div>
-    <div class="col-header">Historical Results</div>
-
-    {# ── Yesterday ── #}
-    <div class="results-panel">
-        <div class="panel-header">
-            <span class="panel-title">Yesterday &middot; {{ yesterday_date }}</span>
-            {% if yesterday and yesterday.get('n_completed', 0) > 0 %}
-            <div class="summary-stat"><div class="s-label">Games</div><div class="s-value neutral">{{ yesterday.n_completed }}</div></div>
-            {{ market_stats(yesterday) }}
-            {% if yesterday.avg_score_err is not none %}
-            <div class="summary-stat"><div class="s-label" title="Average runs prediction error per team">Avg Err</div><div class="s-value {% if yesterday.avg_score_err <= 1.5 %}good{% else %}neutral{% endif %}">±{{ "%.1f"|format(yesterday.avg_score_err) }}</div></div>
-            {% endif %}
-            {% endif %}
-        </div>
-        {% if yesterday and yesterday.get('n_completed', 0) > 0 %}
-        <table class="results-table">
-            <thead><tr><th>Away</th><th>Home</th><th>Actual</th><th title="Most common predicted final score">Pred</th><th title="The model's moneyline pick and whether it hit (✓ / ✗)">Pick</th><th title="Average score error vs actual result">Err</th></tr></thead>
-            <tbody>
-            {% for g in yesterday.games %}
-                {% if g.get('error') %}
-                <tr><td colspan="6" style="color:#444;font-size:10px;padding:7px 10px;font-style:italic;">{{ g.away_name }} @ {{ g.home_name }} — error</td></tr>
-                {% else %}
-                <tr>
-                    <td><div class="r-team"><img class="r-logo" src="{{ g.away_logo }}" alt=""><span class="r-name">{{ g.away_name }}</span></div></td>
-                    <td><div class="r-team"><img class="r-logo" src="{{ g.home_logo }}" alt=""><span class="r-name">{{ g.home_name }}</span></div></td>
-                    <td>
-                        <div class="actual-score">{{ g.actual_away_score }}–{{ g.actual_home_score }}</div>
-                        <div class="sub-text">{% if g.actual_home_won %}{{ g.home_name }} W{% else %}{{ g.away_name }} W{% endif %}</div>
-                    </td>
-                    <td>
-                        <div style="font-size:12px;font-weight:700;" title="Most common simulated final score">{{ g.modal_away_score | default(g.median_away_score | round | int) }}–{{ g.modal_home_score | default(g.median_home_score | round | int) }}</div>
-                        <div class="sub-text" title="Home team win probability">{{ g.home_win_pct }}% home win</div>
-                    </td>
-                    <td>
-                        {{ pick_row('ML', g.ml_pick, g.ml_correct, '') }}
-                    </td>
-                    <td>{% set err = (g.home_score_err + g.away_score_err) / 2 %}<span class="{% if err <= 1.0 %}err-low{% elif err <= 2.5 %}err-mid{% else %}err-high{% endif %}">±{{ "%.1f"|format(err) }}</span></td>
-                </tr>
-                {% endif %}
-            {% endfor %}
-            </tbody>
-        </table>
-        {% else %}
-        <div class="no-games" style="padding:20px;">No completed games found.</div>
-        {% endif %}
-    </div>
-
-    {# ── Last 7 Days ── #}
-    <div class="results-panel">
-        <div class="panel-header">
-            <span class="panel-title">Last 7 Days</span>
-            {% if last_7 and last_7.total_games > 0 %}
-            <div class="summary-stat"><div class="s-label">Games</div><div class="s-value neutral">{{ last_7.total_games }}</div></div>
-            {{ market_stats(last_7) }}
-            {% if last_7.avg_score_err is not none %}
-            <div class="summary-stat"><div class="s-label" title="Average runs prediction error per team">Avg Err</div><div class="s-value {% if last_7.avg_score_err <= 1.5 %}good{% else %}neutral{% endif %}">±{{ "%.1f"|format(last_7.avg_score_err) }}</div></div>
-            {% endif %}
-            <div class="summary-stat"><div class="s-label">Days</div><div class="s-value neutral">{{ last_7.days_with_games }}/7</div></div>
-            {% endif %}
-        </div>
-        {% if last_7 and last_7.daily %}
-        <table class="daily-table">
-            <thead><tr><th>Date</th><th>Games</th><th>Accuracy</th><th>Avg Err</th></tr></thead>
-            <tbody>
-            {% for day in last_7.daily %}
-            <tr>
-                <td style="color:#aaa;">{{ day.result_date }}</td>
-                <td>{{ day.n_completed }}</td>
-                <td>
-                    <span style="font-weight:700;color:{% if day.winner_accuracy >= 60 %}#4caf50{% else %}#e8e8e8{% endif %};">{{ day.winner_accuracy }}%</span>
-                    <div class="acc-bar"><div class="acc-bar-fill" style="width:{{ day.winner_accuracy }}%;background:{% if day.winner_accuracy >= 60 %}#4caf50{% else %}#666{% endif %};"></div></div>
-                </td>
-                <td>{% if day.avg_score_err is not none %}<span class="{% if day.avg_score_err <= 1.5 %}err-low{% elif day.avg_score_err <= 2.5 %}err-mid{% else %}err-high{% endif %}">±{{ "%.1f"|format(day.avg_score_err) }}</span>{% else %}—{% endif %}</td>
-            </tr>
-            {% endfor %}
-            </tbody>
-        </table>
-        {% else %}
-        <div class="no-games" style="padding:20px;">No cached data yet — loads automatically over time.</div>
-        {% endif %}
-    </div>
-
-    {# ── Last 30 Days ── #}
-    <div class="results-panel">
-        <div class="panel-header">
-            <span class="panel-title">Last 90 Days</span>
-            {% if last_90 and last_90.total_games > 0 %}
-            <div class="summary-stat"><div class="s-label">Games</div><div class="s-value neutral">{{ last_90.total_games }}</div></div>
-            {{ market_stats(last_90) }}
-            {% if last_90.avg_score_err is not none %}
-            <div class="summary-stat"><div class="s-label" title="Average runs prediction error per team">Avg Err</div><div class="s-value {% if last_90.avg_score_err <= 1.5 %}good{% else %}neutral{% endif %}">±{{ "%.1f"|format(last_90.avg_score_err) }}</div></div>
-            {% endif %}
-            <div class="summary-stat"><div class="s-label">Days</div><div class="s-value neutral">{{ last_90.days_with_games }}/90</div></div>
-            {% endif %}
-        </div>
-        {% if last_90 and last_90.daily %}
-        <table class="daily-table">
-            <thead><tr><th>Date</th><th>Games</th><th>Accuracy</th><th>Avg Err</th></tr></thead>
-            <tbody>
-            {% for day in last_90.daily %}
-            <tr>
-                <td style="color:#aaa;">{{ day.result_date }}</td>
-                <td>{{ day.n_completed }}</td>
-                <td>
-                    <span style="font-weight:700;color:{% if day.winner_accuracy >= 60 %}#4caf50{% else %}#e8e8e8{% endif %};">{{ day.winner_accuracy }}%</span>
-                    <div class="acc-bar"><div class="acc-bar-fill" style="width:{{ day.winner_accuracy }}%;background:{% if day.winner_accuracy >= 60 %}#4caf50{% else %}#666{% endif %};"></div></div>
-                </td>
-                <td>{% if day.avg_score_err is not none %}<span class="{% if day.avg_score_err <= 1.5 %}err-low{% elif day.avg_score_err <= 2.5 %}err-mid{% else %}err-high{% endif %}">±{{ "%.1f"|format(day.avg_score_err) }}</span>{% else %}—{% endif %}</td>
-            </tr>
-            {% endfor %}
-            </tbody>
-        </table>
-        {% else %}
-        <div class="no-games" style="padding:20px;">No cached data yet — loads automatically over time.</div>
-        {% endif %}
-    </div>
-
-</div><!-- /right -->
-</div><!-- /dashboard -->
-
-<footer>
-  Model {{ model_name }} &middot; trained on {{ model_n_games }} games ({{ model_years | join(', ') }})
-  &middot; XGBoost + Monte Carlo &middot; MLB Stats API &middot; pybaseball &middot; Open-Meteo
-</footer>
+    <div id="chatFocus" style="display:none;padding:8px 18px;font:600 11px system-ui;color:#3b82f6;background:#101722;border-bottom:1px solid #161a22;"></div>
+    <div id="chatMsgs" class="app-scroll" style="flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px;"></div>
+    <form id="chatForm" style="display:flex;gap:8px;padding:12px;border-top:1px solid #161a22;">
+      <input id="chatInput" autocomplete="off" placeholder="Ask about tonight's slate…" style="flex:1;background:#13161d;border:1px solid #222834;border-radius:10px;padding:10px 12px;color:#eef0f4;font:400 13px system-ui;outline:none;">
+      <button type="submit" style="display:flex;align-items:center;justify-content:center;background:#3b82f6;color:#fff;border:none;border-radius:10px;padding:0 16px;font:700 12.5px system-ui;cursor:pointer;">Send</button>
+    </form>
+  </div>
+</div>
 
 <script>
-/* ── Collapsible cards: lazy chart + analysis on first expand ── */
-const _chartRendered = {}, _explainLoaded = {};
+const ACCENT = '#3b82f6', EDGE = '#34d399';
+const DATA = JSON.parse(document.getElementById('payload').textContent);
+const state = { tab: 'today', openId: null, sort: 'edge', innView: 'both', showLineups: false };
 
-function renderCardChart(gameId) {
-    if (_chartRendered[gameId]) return;
-    const d = window['cdata_' + gameId];
-    if (d && document.getElementById('chart-' + gameId)) {
-        renderScoreDistribution('chart-' + gameId,
-            d.home, d.away, d.labels, d.homeName, d.awayName, d.homeColor, d.awayColor, d.nSims);
-        _chartRendered[gameId] = true;
+/* ---------- helpers ---------- */
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+function img(url, size) { return url ? `<img class="logo" src="${esc(url)}" alt="" loading="lazy" style="width:${size}px;height:${size}px;">` : ''; }
+function fmtTime(utc) { if (!utc) return 'TBD'; const d = new Date(utc); if (isNaN(d.getTime())) return 'TBD'; return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
+function gameById(id) { return DATA.games.find(g => g.id === id); }
+function probToML(p) { p = Math.min(0.95, Math.max(0.04, p)); return p >= 0.5 ? '-' + Math.round(p / (1 - p) * 100) : '+' + Math.round((1 - p) / p * 100); }
+function sortedGames() {
+  const gs = [...DATA.games];
+  gs.sort((a, b) => state.sort === 'time' ? (a.utc || '~').localeCompare(b.utc || '~') : (b.edgePct - a.edgePct));
+  return gs;
+}
+
+/* ---------- header tabs ---------- */
+function renderHeader() {
+  document.getElementById('dateLabel').textContent = DATA.dateLabel || '';
+  const tabsEl = document.getElementById('tabs');
+  if (state.openId !== null) { tabsEl.innerHTML = ''; return; }
+  const tab = (key, label) => {
+    const on = state.tab === key;
+    return `<div class="tap" data-tab="${key}" style="padding-bottom:11px;font:600 13.5px system-ui;color:${on ? '#f1f3f6' : '#5b616d'};border-bottom:2px solid ${on ? ACCENT : 'transparent'};">${label}</div>`;
+  };
+  tabsEl.innerHTML = `<div style="display:flex;gap:24px;padding:16px 18px 0;">${tab('today', 'Today')}${tab('track', 'Track Record')}${tab('settings', 'Settings')}</div>`;
+  tabsEl.querySelectorAll('[data-tab]').forEach(el => el.onclick = () => { state.tab = el.dataset.tab; render(); });
+}
+
+/* ---------- TODAY ---------- */
+function todayRow(g, edge) {
+  if (edge) {
+    return `<div class="tap" data-open="${g.id}" style="display:flex;align-items:center;gap:12px;padding:11px 8px;border-radius:12px;">
+      <div class="num" style="min-width:52px;text-align:center;font:800 19px system-ui;color:${EDGE};letter-spacing:-.5px;">+${g.edgePct}%</div>
+      <div style="flex:1;min-width:0;">
+        <div style="display:flex;align-items:center;gap:7px;font:700 14px system-ui;color:#eef0f4;">${img(g.awayLogo, 19)}${esc(g.away)}<span style="color:#4d525d;font-weight:500;">@</span>${img(g.homeLogo, 19)}${esc(g.home)}</div>
+        <div style="margin-top:3px;font:500 11.5px system-ui;color:#737a86;">Take <span style="color:#aeb4c0;font-weight:700;">${esc(g.pick)} ${g.pickPct}%</span> · proj ${esc(g.score)}</div>
+      </div>
+      <div style="text-align:right;flex-shrink:0;">
+        <div class="num" style="font:600 11.5px system-ui;color:#7c828e;">${fmtTime(g.utc)}</div>
+        <div style="margin-top:3px;font:600 11px system-ui;color:${ACCENT};">Detail ›</div>
+      </div></div>`;
+  }
+  return `<div class="tap" data-open="${g.id}" style="display:flex;align-items:center;gap:12px;padding:10px 8px;border-radius:12px;opacity:.64;">
+    <div style="min-width:52px;text-align:center;font:600 15px system-ui;color:#454a55;">—</div>
+    <div style="flex:1;min-width:0;">
+      <div style="display:flex;align-items:center;gap:7px;font:700 13.5px system-ui;color:#c2c6cf;">${img(g.awayLogo, 18)}${esc(g.away)}<span style="color:#4d525d;font-weight:500;">@</span>${img(g.homeLogo, 18)}${esc(g.home)}</div>
+      <div style="margin-top:2px;font:500 11px system-ui;color:#646a76;">Lean ${esc(g.pick)} ${g.pickPct}% · proj ${esc(g.score)}</div>
+    </div>
+    <div class="num" style="font:600 11px system-ui;color:#646a76;flex-shrink:0;">${fmtTime(g.utc)}</div></div>`;
+}
+function renderToday() {
+  const gs = sortedGames();
+  const edges = gs.filter(g => g.hasEdge), none = gs.filter(g => !g.hasEdge);
+  const seg = (on, key, label) => `<div class="tap" data-sort="${key}" style="padding:4px 10px;border-radius:6px;font:600 11px system-ui;color:${on ? '#f1f3f6' : '#646a76'};background:${on ? '#222834' : 'transparent'};">${label}</div>`;
+  let html = `<div style="padding:0 10px 40px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:14px 8px 6px;">
+      <div style="display:flex;align-items:center;gap:7px;color:#6b7280;font:500 11.5px system-ui;">
+        <span style="width:6px;height:6px;border-radius:50%;background:${EDGE};display:inline-block;"></span>
+        <span style="color:#cfd3da;font-weight:700;">${DATA.accAccuracy}% hit rate on moneyline</span>&nbsp;last 7 days
+      </div>
+      <div style="display:flex;background:#13161d;border:1px solid #1e222b;border-radius:8px;padding:2px;">${seg(state.sort === 'edge', 'edge', 'Edge')}${seg(state.sort === 'time', 'time', 'Time')}</div>
+    </div>`;
+  if (!gs.length) {
+    html += `<div style="padding:40px 12px;text-align:center;color:#646a76;font:500 13px system-ui;">No games scheduled today.</div>`;
+  } else {
+    html += `<div style="font:700 10px system-ui;letter-spacing:1.4px;color:#565c68;text-transform:uppercase;padding:8px 8px 6px;">Best edges today</div>`;
+    html += edges.length ? edges.map(g => todayRow(g, true)).join('') : `<div style="padding:6px 10px;color:#565c68;font:500 12px system-ui;">No edges vs the market today.</div>`;
+    if (none.length) {
+      html += `<div style="font:700 10px system-ui;letter-spacing:1.4px;color:#3f444e;text-transform:uppercase;padding:18px 8px 6px;">No edge — model agrees with market</div>`;
+      html += none.map(g => todayRow(g, false)).join('');
     }
-}
-function ensureExplain(gameId) {
-    if (_explainLoaded[gameId]) return;
-    _explainLoaded[gameId] = true;
-    streamExplanation(gameId);
-}
-function expandCard(gameId) {
-    const card = document.getElementById('card-' + gameId);
-    if (!card) return;
-    card.classList.add('expanded');
-    renderCardChart(gameId);
-    ensureExplain(gameId);
-}
-function collapseCard(gameId) {
-    const card = document.getElementById('card-' + gameId);
-    if (card) card.classList.remove('expanded');
-}
-function toggleCard(gameId) {
-    const card = document.getElementById('card-' + gameId);
-    if (!card) return;
-    card.classList.contains('expanded') ? collapseCard(gameId) : expandCard(gameId);
-    saveExpanded();
-}
-function allCards() { return [...document.querySelectorAll('.game-card[data-gameid]')]; }
-function expandAll() { allCards().forEach(c => expandCard(+c.dataset.gameid)); }
-function collapseAll() { allCards().forEach(c => collapseCard(+c.dataset.gameid)); }
-
-let _allExpanded = false;
-function toggleExpandAll() {
-    _allExpanded = !_allExpanded;
-    _allExpanded ? expandAll() : collapseAll();
-    document.getElementById('expand-toggle').textContent = _allExpanded ? 'Collapse all' : 'Expand all';
-    localStorage.setItem('ui.expandAll', _allExpanded ? '1' : '0');
-    saveExpanded();
-}
-function jumpToGame(gameId) {
-    expandCard(gameId);
-    saveExpanded();
-    const card = document.getElementById('card-' + gameId);
-    if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
-}
-function saveExpanded() {
-    const ids = [...document.querySelectorAll('.game-card.expanded[data-gameid]')].map(c => c.dataset.gameid);
-    localStorage.setItem('ui.expanded', JSON.stringify(ids));
+  }
+  html += `</div>`;
+  return html;
 }
 
-/* ── Sort / filter / search ── */
-function applySortFilter() {
-    const list = document.getElementById('games-list');
-    if (!list) return;
-    const sort = document.getElementById('sort-select').value;
-    const filter = document.getElementById('filter-select').value;
-    const q = document.getElementById('team-search').value.trim().toLowerCase();
-    localStorage.setItem('ui.sort', sort);
-    localStorage.setItem('ui.filter', filter);
-    localStorage.setItem('ui.search', q);
-    const cards = allCards();
-    cards.forEach(c => {
-        let show = true;
-        if (filter === 'edge') show = parseFloat(c.dataset.edge || '0') > 0;
-        if (show && q) show = (c.dataset.teams || '').includes(q);
-        c.style.display = show ? '' : 'none';
-    });
-    const num = (c, k) => parseFloat(c.dataset[k] || '0');
-    const str = (c, k) => (c.dataset[k] || '');
-    const cmp = {
-        edge: (a, b) => num(b, 'edge') - num(a, 'edge'),
-        time: (a, b) => str(a, 'firstpitch').localeCompare(str(b, 'firstpitch')),
-        confidence: (a, b) => num(b, 'confidence') - num(a, 'confidence'),
-        matchup: (a, b) => str(a, 'teams').localeCompare(str(b, 'teams')),
-    }[sort] || (() => 0);
-    cards.sort(cmp).forEach(c => list.appendChild(c));
+/* ---------- TRACK RECORD ---------- */
+function renderTrack() {
+  const t = DATA.track;
+  const card = s => `<div style="background:#11141a;border:1px solid #1e222b;border-radius:13px;padding:14px;">
+    <div style="font:600 10.5px system-ui;color:#646a76;text-transform:uppercase;letter-spacing:.6px;">${esc(s.label)}</div>
+    <div class="num" style="font:800 26px system-ui;color:${s.good ? '#4caf50' : '#e8e8e8'};margin-top:8px;letter-spacing:-1px;">${s.acc}%</div>
+    <div style="font:500 11px system-ui;color:#737a86;margin-top:3px;">${s.games} games${s.err != null ? ' · ±' + s.err + ' runs' : ''}</div></div>`;
+  const yrow = y => `<div style="display:flex;align-items:center;gap:12px;padding:11px 4px;border-top:1px solid #161a21;">
+    <div style="flex:1;min-width:0;display:flex;align-items:center;gap:6px;font:700 13px system-ui;color:#e3e6eb;">${img(y.awayLogo, 18)}${esc(y.away)}<span style="color:#4d525d;font-weight:500;">@</span>${img(y.homeLogo, 18)}${esc(y.home)}</div>
+    <div style="text-align:right;"><div class="num" style="font:700 13px system-ui;color:#dfe2e8;">${esc(y.actual)}</div><div class="num" style="font:500 10px system-ui;color:#646a76;margin-top:1px;">pred ${esc(y.pred)}</div></div>
+    <div style="min-width:54px;text-align:center;"><span style="font:800 10.5px system-ui;padding:3px 9px;border-radius:20px;color:${y.win ? '#4caf50' : '#ef5350'};background:${y.win ? 'rgba(76,175,80,.14)' : 'rgba(239,83,80,.14)'};">${y.win ? '✓ HIT' : '✗ MISS'}</span></div></div>`;
+  const drow = d => `<div style="display:flex;align-items:center;gap:12px;padding:8px 4px;">
+    <div style="width:54px;font:500 11.5px system-ui;color:#9aa0ac;">${esc(d.date)}</div>
+    <div style="width:62px;font:500 11px system-ui;color:#646a76;">${d.n} games</div>
+    <div style="flex:1;height:7px;border-radius:4px;background:#15181f;overflow:hidden;"><div style="height:100%;width:${d.acc}%;background:${d.acc >= 60 ? '#4caf50' : '#5a6270'};border-radius:4px;"></div></div>
+    <div class="num" style="width:38px;text-align:right;font:700 12px system-ui;color:${d.acc >= 60 ? '#4caf50' : '#c2c6cf'};">${d.acc}%</div></div>`;
+  let html = `<div style="padding:16px 16px 40px;">
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:20px;">${t.summary.map(card).join('')}</div>
+    <div style="font:700 10px system-ui;letter-spacing:1.4px;color:#565c68;text-transform:uppercase;padding:0 2px 8px;">Yesterday · ${esc(t.yDate)}</div>`;
+  html += t.yesterday.length ? t.yesterday.map(yrow).join('') : `<div style="padding:6px 4px;color:#565c68;font:500 12px system-ui;">No graded games yet.</div>`;
+  html += `<div style="font:700 10px system-ui;letter-spacing:1.4px;color:#565c68;text-transform:uppercase;padding:22px 2px 8px;">Daily accuracy · last 7 days</div>`;
+  html += t.daily.length ? t.daily.map(drow).join('') : `<div style="padding:6px 4px;color:#565c68;font:500 12px system-ui;">Building history…</div>`;
+  html += `</div>`;
+  return html;
 }
 
-document.addEventListener('DOMContentLoaded', function () {
-    document.querySelectorAll('.game-time[data-utc]').forEach(function (el) {
-        const utc = el.dataset.utc;
-        if (!utc) return;
-        try {
-            const d = new Date(utc);
-            if (isNaN(d.getTime())) return;
-            el.textContent = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', timeZoneName: 'short' });
-        } catch (e) {}
-    });
-
-    // One-time migration: the old default was 'edge'; drop a stale saved value
-    // so the new 'first pitch' default takes effect for everyone.
-    if (localStorage.getItem('ui.sortDefault') !== 'time') {
-        localStorage.removeItem('ui.sort');
-        localStorage.setItem('ui.sortDefault', 'time');
-    }
-
-    const sortSel = document.getElementById('sort-select');
-    if (sortSel) {
-        sortSel.value = localStorage.getItem('ui.sort') || 'time';
-        document.getElementById('filter-select').value = localStorage.getItem('ui.filter') || 'all';
-        document.getElementById('team-search').value = localStorage.getItem('ui.search') || '';
-        sortSel.addEventListener('change', applySortFilter);
-        document.getElementById('filter-select').addEventListener('change', applySortFilter);
-        document.getElementById('team-search').addEventListener('input', applySortFilter);
-        applySortFilter();
-    }
-
-    // Restore expand state
-    if (localStorage.getItem('ui.expandAll') === '1') {
-        _allExpanded = true;
-        expandAll();
-        const t = document.getElementById('expand-toggle');
-        if (t) t.textContent = 'Collapse all';
-    } else {
-        let saved = [];
-        try { saved = JSON.parse(localStorage.getItem('ui.expanded') || '[]'); } catch (e) {}
-        saved.forEach(id => expandCard(+id));
-    }
-});
-
-/* ── Print: render every card as if expanded (charts need a visible canvas) ── */
-window.addEventListener('beforeprint', function () {
-    allCards().forEach(function (c) { c.classList.add('expanded'); renderCardChart(+c.dataset.gameid); });
-});
-window.addEventListener('afterprint', function () {
-    const allExp = localStorage.getItem('ui.expandAll') === '1';
-    let saved = [];
-    try { saved = JSON.parse(localStorage.getItem('ui.expanded') || '[]').map(String); } catch (e) {}
-    allCards().forEach(function (c) {
-        c.classList.toggle('expanded', allExp || saved.includes(c.dataset.gameid));
-    });
-});
-
-function streamExplanation(gameId, onDone) {
-    const box = document.getElementById('explain-' + gameId);
-    if (!box) { if (onDone) onDone(); return; }
-
-    box.innerHTML = '<span class="explain-queued">Generating analysis…</span>';
-    let hasText = false;
-
-    const evtSource = new EventSource('/explain/' + gameId);
-    evtSource.onmessage = function (e) {
-        if (e.data === '[DONE]') {
-            evtSource.close();
-            if (onDone) onDone();
-            return;
-        }
-        try {
-            const chunk = JSON.parse(e.data);
-            if (chunk.error) {
-                box.textContent = chunk.error;
-                evtSource.close();
-                if (onDone) onDone();
-            } else if (chunk.text) {
-                if (!hasText) { box.textContent = ''; hasText = true; }
-                box.textContent += chunk.text;
-            }
-        } catch (_) {}
-    };
-    evtSource.onerror = function () {
-        evtSource.close();
-        if (!hasText) box.textContent = 'Could not reach Ollama — make sure it is running.';
-        if (onDone) onDone();
-    };
+/* ---------- SETTINGS ---------- */
+function renderSettings() {
+  const m = DATA.model;
+  const years = (m.years && m.years.length) ? ` (${m.years[0]}–${m.years[m.years.length - 1]})` : '';
+  return `<div style="padding:18px 18px 40px;">
+    <div style="font:700 10px system-ui;letter-spacing:1.4px;color:#565c68;text-transform:uppercase;padding:0 2px 10px;">Data</div>
+    <div style="background:#11141a;border:1px solid #1e222b;border-radius:14px;padding:16px;margin-bottom:18px;">
+      <div style="font:600 13px system-ui;color:#eef0f4;">Predictions &amp; results</div>
+      <div style="font:500 11.5px system-ui;color:#737a86;margin-top:5px;line-height:1.55;">Pulls today's slate, odds and final scores from the MLB Stats API and sportsbooks, then re-runs the simulation.</div>
+      <form method="post" action="/refresh" onsubmit="this.querySelector('button').textContent='Refreshing…';this.querySelector('button').style.opacity=.6;">
+        <button type="submit" style="margin-top:13px;width:100%;border:none;display:flex;align-items:center;justify-content:center;padding:11px;border-radius:10px;background:${ACCENT};color:#fff;font:700 12.5px system-ui;cursor:pointer;">Refresh data</button>
+      </form>
+    </div>
+    <div style="font:700 10px system-ui;letter-spacing:1.4px;color:#565c68;text-transform:uppercase;padding:0 2px 10px;">Model</div>
+    <div style="background:#11141a;border:1px solid #1e222b;border-radius:14px;padding:16px;margin-bottom:18px;">
+      <div style="font:600 13px system-ui;color:#eef0f4;">${esc(m.name)} · XGBoost + Monte Carlo</div>
+      <div style="font:500 11.5px system-ui;color:#737a86;margin-top:5px;line-height:1.55;">Trained on ${esc(m.nGames)} games${years}. Retraining refits on the latest results and forks a new model version — it can take a few minutes.</div>
+      <form method="post" action="/retrain" onsubmit="this.querySelector('button').textContent='Retraining…';this.querySelector('button').style.opacity=.6;">
+        <button type="submit" style="margin-top:13px;width:100%;display:flex;align-items:center;justify-content:center;padding:11px;border-radius:10px;background:#222834;color:#cdd2da;font:700 12.5px system-ui;border:1px solid #222834;cursor:pointer;">Retrain model</button>
+      </form>
+    </div>
+    <div style="font:700 10px system-ui;letter-spacing:1.4px;color:#565c68;text-transform:uppercase;padding:0 2px 10px;">More</div>
+    <a href="/archive" style="text-decoration:none;display:block;background:#11141a;border:1px solid #1e222b;border-radius:14px;padding:14px 16px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;"><span style="font:600 13px system-ui;color:#eef0f4;">Model archive</span><span style="font:600 12px system-ui;color:${ACCENT};">Open ›</span></div>
+      <div style="font:500 11.5px system-ui;color:#737a86;margin-top:5px;">Accuracy of every past model version, graded against real finals.</div>
+    </a>
+  </div>`;
 }
 
-/* ── Chat assistant ── */
-let chatMessages = [];
-let chatFocusGame = null;
-let chatBusy = false;
+/* ---------- GAME DETAIL ---------- */
+function distRow(abbr, logo, counts, labels, color) {
+  const n = Math.min(labels.length, 13);
+  const slice = counts.slice(0, n);
+  const max = Math.max(1, ...slice);
+  const modal = slice.indexOf(Math.max(...slice));
+  const total = slice.reduce((a, b) => a + b, 0) || 1;
+  const bars = slice.map((c, k) => `<div title="${labels[k]} runs · ${Math.round(c / total * 100)}%" style="flex:1;height:${Math.max(3, c / max * 100)}%;min-height:2px;background:${k === modal ? color : color + '66'};border-radius:2px;"></div>`).join('');
+  return `<div style="display:flex;align-items:flex-end;gap:8px;margin-bottom:10px;">
+    <div style="width:42px;display:flex;align-items:center;gap:5px;font:700 12px system-ui;color:#dfe2e8;">${img(logo, 16)}${esc(abbr)}</div>
+    <div style="flex:1;display:flex;align-items:flex-end;gap:3px;height:48px;">${bars}</div></div>`;
+}
+function renderDetail() {
+  const g = gameById(state.openId);
+  if (!g) { state.openId = null; return renderToday(); }
+  const betPctColor = g.hasEdge ? EDGE : '#7c828e';
+  const betHeadline = g.hasEdge ? `+${g.edgePct}%` : '—';
+  const betLine = g.hasEdge ? `Take ${esc(g.pick)} moneyline` : `Lean ${esc(g.pick)}, no edge`;
+  const betSub = g.hasEdge ? `Model gives ${esc(g.pick)} a ${g.pickPct}% win chance vs the market` : `Model and market agree — pass on a bet`;
+  const labels = g.scoreDist.labels || [];
+  const n = Math.min(labels.length, 13);
+  const axis = labels.slice(0, n).map(k => `<div class="num" style="flex:1;text-align:center;font:500 8.5px system-ui;color:#5a606b;">${k}</div>`).join('');
 
-function toggleChat(show) {
-    const panel = document.getElementById('chat-panel');
-    const fab = document.getElementById('chat-fab');
-    const open = (show === undefined) ? (panel.style.display === 'none') : show;
-    panel.style.display = open ? 'flex' : 'none';
-    fab.style.display = open ? 'none' : 'block';
-    if (open) { renderChat(); document.getElementById('chat-text').focus(); }
+  // inning moneyline table
+  const inn = g.innings[state.innView] || [];
+  const innRows = inn.map((c, i) => `<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-top:1px solid #15181f;">
+    <div style="width:40px;font:700 11px system-ui;color:#9aa0ac;">${i + 1}</div>
+    <div class="num" style="flex:1;text-align:right;font:600 12px system-ui;color:#cfd3da;">${probToML((c[0] || 0) / 100)}</div>
+    <div class="num" style="flex:1;text-align:right;font:600 12px system-ui;color:#cfd3da;">${probToML((c[1] || 0) / 100)}</div>
+    <div class="num" style="flex:1;text-align:right;font:700 12px system-ui;color:#aecbff;">${probToML((c[2] || 0) / 100)}</div></div>`).join('');
+  const innSeg = (on, key, label) => `<div class="tap" data-inn="${key}" style="padding:3px 10px;border-radius:6px;font:600 10.5px system-ui;color:${on ? '#f1f3f6' : '#646a76'};background:${on ? '#222834' : 'transparent'};">${esc(label)}</div>`;
+
+  const lineHtml = (arr) => arr.length ? arr.map((name, i) => `<div style="display:flex;gap:8px;padding:6px 8px;border-bottom:1px solid #15181f;font:500 12px system-ui;color:#c2c6cf;"><span style="color:#4d525d;">${i + 1}</span>${esc(name)}</div>`).join('') : `<div style="padding:6px 8px;font:500 12px system-ui;color:#565c68;">Not posted yet</div>`;
+
+  return `<div style="padding:0 0 48px;">
+    <div id="detailBack" class="tap" style="display:flex;align-items:center;gap:6px;padding:14px 18px 10px;font:600 12.5px system-ui;color:#8a909c;">‹ Back to today</div>
+
+    <div style="padding:4px 18px 0;">
+      <div style="background:linear-gradient(150deg,${g.awayTint} 0%,#0f1217 46%,#0f1217 60%,${g.homeTint} 100%);border:1px solid #1d212a;border-radius:16px;padding:18px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <div style="display:flex;flex-direction:column;align-items:center;gap:6px;flex:1;">${img(g.awayLogo, 46)}<span style="font:800 15px system-ui;color:#eef0f4;">${esc(g.away)}</span><span style="font:600 9px system-ui;color:#5a606b;text-transform:uppercase;letter-spacing:.5px;">Away</span><span style="font:600 11px system-ui;color:#aab0bc;text-align:center;">${esc(g.awayP)}</span></div>
+          <div style="text-align:center;padding:0 12px;"><div class="num" style="font:800 30px system-ui;color:#f1f3f6;letter-spacing:1px;white-space:nowrap;">${esc(g.score)}</div><div style="font:600 9px system-ui;color:#5a606b;text-transform:uppercase;letter-spacing:1px;margin-top:2px;">projected</div><div class="num" style="font:500 11px system-ui;color:#7c828e;margin-top:7px;">${fmtTime(g.utc)}</div></div>
+          <div style="display:flex;flex-direction:column;align-items:center;gap:6px;flex:1;">${img(g.homeLogo, 46)}<span style="font:800 15px system-ui;color:#eef0f4;">${esc(g.home)}</span><span style="font:600 9px system-ui;color:#5a606b;text-transform:uppercase;letter-spacing:.5px;">Home</span><span style="font:600 11px system-ui;color:#aab0bc;text-align:center;">${esc(g.homeP)}</span></div>
+        </div>
+        <div style="margin-top:16px;">
+          <div style="display:flex;justify-content:space-between;font:700 11.5px system-ui;margin-bottom:5px;"><span class="num" style="color:#dfe2e8;">${g.awayPct}%</span><span style="color:#646a76;font-weight:500;">win probability</span><span class="num" style="color:#dfe2e8;">${g.homePct}%</span></div>
+          <div style="height:8px;border-radius:5px;overflow:hidden;display:flex;background:#0a0c10;"><div style="width:${g.awayPct}%;background:${g.awayColor};"></div><div style="width:${g.homePct}%;background:${g.homeColor};"></div></div>
+        </div>
+      </div>
+    </div>
+
+    <div style="padding:16px 18px 0;">
+      <div style="font:700 10px system-ui;letter-spacing:1.4px;color:#565c68;text-transform:uppercase;padding:0 2px 8px;">The bet</div>
+      <div style="background:#11141a;border:1px solid ${g.hasEdge ? 'rgba(52,211,153,.3)' : '#1e222b'};border-radius:14px;overflow:hidden;">
+        <div style="display:flex;align-items:center;gap:14px;padding:15px 16px;background:${g.hasEdge ? 'rgba(52,211,153,.08)' : 'transparent'};">
+          <div class="num" style="font:800 30px system-ui;color:${betPctColor};letter-spacing:-1px;">${betHeadline}</div>
+          <div style="flex:1;"><div style="font:700 14px system-ui;color:#eef0f4;">${betLine}</div><div style="font:500 11.5px system-ui;color:#737a86;margin-top:2px;">${betSub}</div></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;border-top:1px solid #1c2029;">
+          <div style="padding:11px 14px;border-right:1px solid #1c2029;"><div style="font:600 9.5px system-ui;color:#646a76;text-transform:uppercase;letter-spacing:.6px;">Model</div><div class="num" style="font:700 13px system-ui;color:#aecbff;margin-top:4px;">${esc(g.pick)} ${esc(g.modelML || '—')}</div></div>
+          <div style="padding:11px 14px;border-right:1px solid #1c2029;"><div style="font:600 9.5px system-ui;color:#646a76;text-transform:uppercase;letter-spacing:.6px;">Market</div><div class="num" style="font:700 13px system-ui;color:#e6ad62;margin-top:4px;">${esc(g.pick)} ${esc(g.marketML || '—')}</div></div>
+          <div style="padding:11px 14px;"><div style="font:600 9.5px system-ui;color:#646a76;text-transform:uppercase;letter-spacing:.6px;">Edge</div><div class="num" style="font:700 13px system-ui;color:${g.hasEdge ? EDGE : '#646a76'};margin-top:4px;">${g.hasEdge ? '+' + g.edgePct + '%' : 'none'}</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div style="padding:18px 18px 0;">
+      <div style="font:700 10px system-ui;letter-spacing:1.4px;color:#565c68;text-transform:uppercase;padding:0 2px 10px;">Run distribution <span style="color:#3f444e;">— how many runs each team scores</span></div>
+      <div style="background:#11141a;border:1px solid #1e222b;border-radius:14px;padding:14px 14px 10px;">
+        ${distRow(g.away, g.awayLogo, g.scoreDist.away, labels, g.awayColor)}
+        ${distRow(g.home, g.homeLogo, g.scoreDist.home, labels, g.homeColor)}
+        <div style="display:flex;align-items:center;gap:8px;"><div style="width:42px;"></div><div style="flex:1;display:flex;gap:3px;">${axis}</div></div>
+        <div style="font:500 10px system-ui;color:#5a606b;text-align:center;padding-top:8px;">runs scored · ${(g.nSims || 0).toLocaleString()} simulations · tallest bar = most likely</div>
+      </div>
+    </div>
+
+    <div style="padding:18px 18px 0;">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:0 2px 10px;gap:10px;">
+        <span style="font:700 10px system-ui;letter-spacing:1.4px;color:#565c68;text-transform:uppercase;">Inning moneylines</span>
+        <div style="display:flex;background:#13161d;border:1px solid #1e222b;border-radius:8px;padding:2px;">${innSeg(state.innView === 'away', 'away', g.away)}${innSeg(state.innView === 'home', 'home', g.home)}${innSeg(state.innView === 'both', 'both', 'Both')}</div>
+      </div>
+      <div style="background:#11141a;border:1px solid #1e222b;border-radius:14px;padding:6px 14px 8px;">
+        <div style="display:flex;align-items:center;gap:8px;padding:8px 0;"><div style="width:40px;font:600 9.5px system-ui;color:#646a76;text-transform:uppercase;letter-spacing:.6px;">Inn</div><div style="flex:1;text-align:right;font:600 9.5px system-ui;color:#646a76;text-transform:uppercase;letter-spacing:.6px;">0 runs</div><div style="flex:1;text-align:right;font:600 9.5px system-ui;color:#646a76;text-transform:uppercase;letter-spacing:.6px;">1 run</div><div style="flex:1;text-align:right;font:600 9.5px system-ui;color:#646a76;text-transform:uppercase;letter-spacing:.6px;">2+ runs</div></div>
+        ${innRows || '<div style="padding:8px 0;color:#565c68;font:500 12px system-ui;">No inning data.</div>'}
+        <div style="font:500 10px system-ui;color:#5a606b;text-align:center;padding-top:8px;">fair moneyline to score exactly 0 / 1 / 2+ runs in each inning</div>
+      </div>
+    </div>
+
+    <div style="padding:18px 18px 0;">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+        <div style="background:#11141a;border:1px solid #1e222b;border-radius:12px;padding:12px 14px;"><div style="font:600 9.5px system-ui;color:#646a76;text-transform:uppercase;letter-spacing:.6px;">Probable starters</div><div style="font:600 12.5px system-ui;color:#dfe2e8;margin-top:7px;">${esc(g.awayP)} <span style="color:#646a76;font-weight:500;">(${esc(g.away)})</span></div><div style="font:600 12.5px system-ui;color:#dfe2e8;margin-top:4px;">${esc(g.homeP)} <span style="color:#646a76;font-weight:500;">(${esc(g.home)})</span></div></div>
+        <div style="background:#11141a;border:1px solid #1e222b;border-radius:12px;padding:12px 14px;"><div style="font:600 9.5px system-ui;color:#646a76;text-transform:uppercase;letter-spacing:.6px;">Venue</div><div style="font:600 12.5px system-ui;color:#dfe2e8;margin-top:7px;">${esc(g.venue || '—')}</div><div style="font:500 11.5px system-ui;color:#9aa0ac;margin-top:4px;">${esc(g.weather)}</div></div>
+      </div>
+    </div>
+
+    <div style="padding:18px 18px 0;">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:0 2px 8px;"><span style="font:700 10px system-ui;letter-spacing:1.4px;color:#565c68;text-transform:uppercase;">AI read</span><div id="detailDiscuss" class="tap" style="font:600 11px system-ui;color:${ACCENT};">Discuss ›</div></div>
+      <div id="explain-${g.id}" style="background:#0f1217;border:1px solid #1c2029;border-radius:14px;padding:15px 16px;font:400 13px/1.65 system-ui;color:#aab0bc;">Reading the matchup…</div>
+    </div>
+
+    <div style="padding:18px 18px 0;">
+      <div id="lineupToggle" class="tap" style="display:flex;align-items:center;justify-content:space-between;padding:13px 16px;background:#11141a;border:1px solid #1e222b;border-radius:12px;"><span style="font:700 12px system-ui;color:#dfe2e8;">Projected lineups</span><span style="font:600 12px system-ui;color:${ACCENT};">${state.showLineups ? 'Hide' : 'Show'}</span></div>
+      ${state.showLineups ? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px;">
+        <div><div style="font:700 10px system-ui;color:#646a76;text-transform:uppercase;letter-spacing:.6px;padding:0 2px 6px;">${esc(g.away)}</div>${lineHtml(g.awayLineup)}</div>
+        <div><div style="font:700 10px system-ui;color:#646a76;text-transform:uppercase;letter-spacing:.6px;padding:0 2px 6px;">${esc(g.home)}</div>${lineHtml(g.homeLineup)}</div>
+      </div>` : ''}
+    </div>
+  </div>`;
 }
 
-function clearFocus() {
-    chatFocusGame = null;
-    document.getElementById('chat-focus').style.display = 'none';
+/* ---------- main render ---------- */
+function render() {
+  renderHeader();
+  const screen = document.getElementById('screen');
+  if (state.openId !== null) {
+    screen.innerHTML = renderDetail();
+    wireDetail();
+  } else if (state.tab === 'today') {
+    screen.innerHTML = renderToday();
+    screen.querySelectorAll('[data-open]').forEach(el => el.onclick = () => openGame(+el.dataset.open));
+    screen.querySelectorAll('[data-sort]').forEach(el => el.onclick = () => { state.sort = el.dataset.sort; render(); });
+  } else if (state.tab === 'track') {
+    screen.innerHTML = renderTrack();
+  } else {
+    screen.innerHTML = renderSettings();
+  }
+  window.scrollTo(0, 0);
+}
+function openGame(id) { state.openId = id; state.showLineups = false; state.innView = 'both'; render(); streamExplanation(id); }
+function wireDetail() {
+  const g = gameById(state.openId);
+  document.getElementById('detailBack').onclick = () => { state.openId = null; render(); };
+  document.getElementById('lineupToggle').onclick = () => { state.showLineups = !state.showLineups; render(); };
+  document.getElementById('detailDiscuss').onclick = () => discussGame(g.id, `${g.away} @ ${g.home}`);
+  document.querySelectorAll('[data-inn]').forEach(el => el.onclick = () => { state.innView = el.dataset.inn; render(); });
 }
 
-function discussGame(gameId, label) {
-    chatFocusGame = { id: gameId, label: label };
-    const fb = document.getElementById('chat-focus');
-    fb.style.display = 'flex';
-    fb.querySelector('.chat-focus-label').textContent = label;
-    toggleChat(true);
-    chatSend('Give me a quick rundown of this game and the biggest edge the model sees vs the market.');
-}
-
-function renderChat() {
-    const box = document.getElementById('chat-msgs');
-    if (!chatMessages.length) {
-        box.innerHTML = '<div class="chat-empty">Ask me about today\'s games, the betting edges vs ESPN, recent accuracy, or how the model works. Or hit <b>Discuss</b> on any game.</div>';
-        return;
-    }
-    box.innerHTML = '';
-    for (const m of chatMessages) {
-        const d = document.createElement('div');
-        d.className = 'chat-msg ' + (m.role === 'user' ? 'chat-user' : 'chat-bot');
-        d.textContent = m.content || '…';
-        box.appendChild(d);
-    }
-    box.scrollTop = box.scrollHeight;
-}
-
-function chatSubmit(e) {
-    e.preventDefault();
-    const inp = document.getElementById('chat-text');
-    const text = inp.value.trim();
-    if (text && !chatBusy) { inp.value = ''; chatSend(text); }
-    return false;
-}
-
-async function chatSend(text) {
-    if (chatBusy) return;
-    chatBusy = true;
-    chatMessages.push({ role: 'user', content: text });
-    const bot = { role: 'assistant', content: '' };
-    chatMessages.push(bot);
-    renderChat();
+/* ---------- AI read (SSE /explain) ---------- */
+const explainCache = {};
+function streamExplanation(gameId) {
+  const box = document.getElementById('explain-' + gameId);
+  if (!box) return;
+  if (explainCache[gameId]) { box.textContent = explainCache[gameId]; return; }
+  let text = '';
+  const es = new EventSource('/explain/' + gameId);
+  es.onmessage = e => {
+    if (e.data === '[DONE]') { es.close(); if (text) explainCache[gameId] = text; return; }
     try {
-        const resp = await fetch('/chat', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                messages: chatMessages.slice(0, -1),
-                game_id: chatFocusGame ? chatFocusGame.id : null,
-            }),
-        });
-        const reader = resp.body.getReader();
-        const dec = new TextDecoder();
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            bot.content += dec.decode(value, { stream: true });
-            renderChat();
-        }
-        if (!bot.content) { bot.content = 'No response — is Ollama running?'; renderChat(); }
-    } catch (err) {
-        bot.content = 'Error: ' + err; renderChat();
-    } finally {
-        chatBusy = false;
-    }
+      const c = JSON.parse(e.data);
+      if (c.error) { box.textContent = c.error; es.close(); }
+      else if (c.text) { if (!text) box.textContent = ''; text += c.text; if (document.getElementById('explain-' + gameId)) box.textContent = text; }
+    } catch (_) {}
+  };
+  es.onerror = () => { es.close(); if (!text) box.textContent = 'Could not reach the AI — make sure Ollama is running.'; };
 }
-</script>
 
-<button id="chat-fab" onclick="toggleChat()" title="Ask the assistant">Ask</button>
-<div id="chat-panel" class="chat-panel" style="display:none">
-    <div class="chat-head">
-        <span>Dashboard Assistant</span>
-        <button class="chat-x" onclick="toggleChat(false)" title="Close">×</button>
-    </div>
-    <div id="chat-focus" class="chat-focus" style="display:none">
-        <span class="chat-focus-label"></span>
-        <button class="chat-clear" onclick="clearFocus()">clear</button>
-    </div>
-    <div id="chat-msgs" class="chat-msgs"></div>
-    <form class="chat-input" onsubmit="return chatSubmit(event)">
-        <input id="chat-text" type="text" autocomplete="off"
-               placeholder="Ask about today's games, the model, history…">
-        <button type="submit">Send</button>
-    </form>
-</div>
+/* ---------- chat (fetch stream /chat) ---------- */
+let chatMessages = [], chatFocus = null, chatBusy = false;
+const fab = document.getElementById('fab'), chatWrap = document.getElementById('chatWrap');
+function openChat() { chatWrap.style.display = 'block'; fab.style.display = 'none'; renderChat(); document.getElementById('chatInput').focus(); }
+function closeChat() { chatWrap.style.display = 'none'; fab.style.display = 'flex'; }
+fab.onclick = () => { chatFocus = null; document.getElementById('chatFocus').style.display = 'none'; openChat(); };
+document.getElementById('chatClose').onclick = closeChat;
+document.getElementById('chatBackdrop').onclick = closeChat;
+function discussGame(id, label) {
+  chatFocus = { id, label };
+  const fb = document.getElementById('chatFocus');
+  fb.style.display = 'block'; fb.textContent = 'Focused on ' + label;
+  openChat();
+  chatSend('Give me a quick rundown of this game and the biggest edge the model sees vs the market.');
+}
+function renderChat() {
+  const box = document.getElementById('chatMsgs');
+  if (!chatMessages.length) {
+    box.innerHTML = `<div style="margin:auto;text-align:center;max-width:280px;"><div style="font:600 13px system-ui;color:#8b93a3;line-height:1.5;">Ask about tonight's edges, a matchup, or pitching.</div><div style="font:500 11.5px system-ui;color:#5a606b;margin-top:8px;line-height:1.6;">e.g. "What's the best bet tonight?" · "Why do you like the Mets?"</div></div>`;
+    return;
+  }
+  box.innerHTML = '';
+  for (const m of chatMessages) {
+    const user = m.role === 'user';
+    const d = document.createElement('div');
+    d.style.cssText = `align-self:${user ? 'flex-end' : 'flex-start'};max-width:84%;background:${user ? '#1d3a59' : '#161b22'};border:1px solid ${user ? 'transparent' : '#222834'};color:${user ? '#eaf2ff' : '#cdd2da'};font:400 13px/1.55 system-ui;padding:9px 12px;border-radius:12px;white-space:pre-wrap;`;
+    d.textContent = m.content || '…';
+    box.appendChild(d);
+  }
+  box.scrollTop = box.scrollHeight;
+}
+document.getElementById('chatForm').onsubmit = e => {
+  e.preventDefault();
+  const inp = document.getElementById('chatInput');
+  const t = inp.value.trim();
+  if (t && !chatBusy) { inp.value = ''; chatSend(t); }
+};
+async function chatSend(text) {
+  if (chatBusy) return;
+  chatBusy = true;
+  chatMessages.push({ role: 'user', content: text });
+  const bot = { role: 'assistant', content: '' };
+  chatMessages.push(bot);
+  renderChat();
+  try {
+    const resp = await fetch('/chat', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages: chatMessages.slice(0, -1), game_id: chatFocus ? chatFocus.id : null }),
+    });
+    const reader = resp.body.getReader(), dec = new TextDecoder();
+    while (true) { const { done, value } = await reader.read(); if (done) break; bot.content += dec.decode(value, { stream: true }); renderChat(); }
+    if (!bot.content) { bot.content = 'No response — is Ollama running?'; renderChat(); }
+  } catch (err) { bot.content = 'Error: ' + err; renderChat(); }
+  finally { chatBusy = false; }
+}
+
+render();
+</script>
 </body>
 </html>
