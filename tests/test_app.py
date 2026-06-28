@@ -123,3 +123,49 @@ def test_retrain_redirects(client, mocker):
     mocker.patch('src.app._get_inning_model', return_value=None)
     response = client.post('/retrain')
     assert response.status_code in (302, 200)
+
+
+# --- Versioned prediction store ---
+
+def test_get_prediction_uses_store_no_resim(tmp_path, mocker):
+    import src.app as app
+    from src import predictions as P
+    mocker.patch.object(app, '_DATA_DIR', tmp_path)
+    mocker.patch.object(app, '_current_version', return_value='vTEST')
+    P.save_prediction(tmp_path, 'vTEST', '2026-06-26',
+                      [{'game_id': 1, 'home_win_pct': 55.0}])
+    sim = mocker.patch('src.app.simulate_game')
+    out = app.get_prediction('2026-06-26')
+    assert out[0]['game_id'] == 1
+    sim.assert_not_called()
+
+
+def test_get_prediction_generates_and_persists_on_miss(tmp_path, mocker):
+    import src.app as app
+    from src import predictions as P
+    mocker.patch.object(app, '_DATA_DIR', tmp_path)
+    mocker.patch.object(app, '_current_version', return_value='vGEN')
+    mocker.patch.object(app, '_get_models', return_value={'win': 1})
+    mocker.patch.object(app, '_get_inning_model', return_value=None)
+    mocker.patch('src.app.get_schedule', return_value=[
+        {'game_id': 7, 'game_date': '2026-06-26', 'home_id': 147, 'away_id': 111,
+         'home_name': 'NYY', 'away_name': 'BOS', 'venue_name': 'YS', 'venue_id': 1,
+         'game_datetime': '2026-06-26T23:05:00Z'}])
+    mocker.patch('src.app.build_game_features', return_value={'elevation_ft': 10})
+    mocker.patch('src.app.get_stadium', return_value={'roof': 'open', 'lat': 40.0, 'lon': -73.0})
+    mocker.patch('src.app.get_weather_for_game', return_value={'is_dome': False})
+    mocker.patch('src.app.predict_game', return_value={
+        'home_win_prob': 0.6, 'away_win_prob': 0.4,
+        'predicted_home_runs': 5.0, 'predicted_away_runs': 3.0})
+    mocker.patch('src.app.simulate_game', return_value={
+        'home_win_pct': 60.0, 'away_win_pct': 40.0,
+        'median_home_score': 5.0, 'median_away_score': 3.0,
+        'modal_home_score': 5, 'modal_away_score': 3, 'predicted_score': '5-3',
+        'score_distribution': {'home': [], 'away': [], 'labels': []},
+        'home_innings_scoring_pct': [], 'away_innings_scoring_pct': [],
+        'home_innings': [], 'away_innings': [], 'n_simulations': 1000})
+
+    out = app.get_prediction('2026-06-26')
+    assert out[0]['game_id'] == 7 and out[0]['home_win_pct'] == 60.0
+    # persisted under the current version
+    assert P.load_prediction(tmp_path, 'vGEN', '2026-06-26')[0]['game_id'] == 7

@@ -20,6 +20,8 @@ from src.model import (
 from src.simulator import simulate_game
 from src.stadiums import get_stadium
 from src.teams import get_team_meta
+from src import predictions as _pred
+from datetime import datetime, timezone
 
 _DATA_DIR = Path(__file__).parent.parent / "data"
 
@@ -64,6 +66,7 @@ _MODEL_META_FILE = _DATA_DIR / "model_meta.json"
 _RESULTS_CACHE_DIR = _DATA_DIR / "results_cache"
 _EXPLANATIONS_DIR = _DATA_DIR / "explanations"
 _TRAINING_YEARS = [2024, 2025, 2026]
+N_SIMULATIONS = 1000  # fixed sim count for the prediction of record (live + backfill)
 
 _simulation_cache: list[dict] = []
 _last_simulated_date: str = ""
@@ -188,6 +191,71 @@ def _get_inning_model(force_retrain: bool = False):
         return None
     _inning_model_cache = train_inning_model(df)
     return _inning_model_cache
+
+
+def _current_version() -> str | None:
+    """Version id of the live model pkls. Registers it on first sight."""
+    v = _pred.model_version(_DATA_DIR)
+    if v and not any(e.get('version') == v for e in _pred.read_versions(_DATA_DIR)):
+        _pred.append_version(_DATA_DIR, {
+            'version': v,
+            'created_at': datetime.now(timezone.utc).isoformat(),
+            **_read_model_meta(),
+        })
+    return v
+
+
+def _simulate_core_for_date(sim_date: str, models, inning_model) -> list[dict]:
+    """Generate the deterministic prediction core for every game on sim_date.
+
+    Used by both the live "today" path and the backfill, so the artifact shown
+    live is byte-for-byte what later appears under "yesterday".
+    """
+    cores = []
+    for game in get_schedule(sim_date):
+        try:
+            features = build_game_features(game, year=2026)
+            stadium = get_stadium(game['home_id']) or {}
+            is_dome = stadium.get('roof') == 'dome'
+            weather = get_weather_for_game(
+                lat=stadium.get('lat', 39.0), lon=stadium.get('lon', -95.0),
+                game_datetime=game.get('game_datetime', ''), is_dome=is_dome,
+            )
+            if models:
+                prediction = predict_game(features, models)
+            else:
+                prediction = {'home_win_prob': 0.5, 'away_win_prob': 0.5,
+                              'predicted_home_runs': 4.5, 'predicted_away_runs': 4.2}
+            sim = simulate_game(prediction, n_simulations=N_SIMULATIONS,
+                                seed=game['game_id'] % 100000)
+            if inning_model:
+                try:
+                    inning_probs = predict_inning_probs(features, inning_model)
+                    sim['home_innings_scoring_pct'] = inning_probs['home']
+                    sim['away_innings_scoring_pct'] = inning_probs['away']
+                except Exception:
+                    pass
+            cores.append(_pred.extract_core({**game, **sim}))
+        except Exception:
+            continue
+    return cores
+
+
+def get_prediction(sim_date: str) -> list[dict]:
+    """Return the frozen prediction core for sim_date under the current version.
+
+    Served verbatim if it exists; otherwise simulated once, persisted, returned.
+    Never re-simulates a date that already has a stored prediction.
+    """
+    version = _current_version()
+    if version:
+        stored = _pred.load_prediction(_DATA_DIR, version, sim_date)
+        if stored is not None:
+            return stored
+    cores = _simulate_core_for_date(sim_date, _get_models(), _get_inning_model())
+    if version:
+        _pred.save_prediction(_DATA_DIR, version, sim_date, cores)
+    return cores
 
 
 def run_daily_simulation(sim_date: str = None, n_simulations: int = 1000) -> list[dict]:
