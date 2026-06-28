@@ -190,6 +190,8 @@ Each game card shows:
 
 Below the cards: yesterday's graded results, plus 7-day and 90-day accuracy rollups. The footer shows the current model name (e.g. `Model v4.1`).
 
+**💬 Dashboard Assistant** — a chat widget (bottom-right) backed by the local Ollama model. It's given the day's predictions, betting lines + edges, recent accuracy, and model facts as context, so you can ask things like *"which game has the biggest moneyline edge?"*, *"how did the model do yesterday?"*, or *"how are win probabilities computed?"*. Each game card has a **💬 Discuss** button that hands that game (and its AI analysis) to the chat for follow-up questions.
+
 ---
 
 ## Model versioning & the archive

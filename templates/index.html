@@ -108,6 +108,24 @@
 
         /* ── AI explanation ── */
         .explain-box { margin-top: 10px; padding: 12px; background: #0e0e0e; border: 1px solid #1e1e1e; border-radius: 6px; font-size: 12px; line-height: 1.7; color: #bbb; white-space: pre-wrap; }
+        .ai-head { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; }
+        .discuss-btn { background: #14283d; color: #6ea3d6; border: 1px solid #234; border-radius: 5px; font-size: 10px; font-weight: 700; padding: 3px 8px; cursor: pointer; }
+        .discuss-btn:hover { background: #1a3551; color: #9ec5ff; }
+        /* Chat assistant */
+        #chat-fab { position: fixed; bottom: 18px; right: 18px; z-index: 60; background: #1a6fd4; color: #fff; border: none; border-radius: 24px; padding: 11px 17px; font-size: 13px; font-weight: 800; cursor: pointer; box-shadow: 0 4px 18px rgba(0,0,0,.55); }
+        .chat-panel { position: fixed; bottom: 18px; right: 18px; z-index: 61; width: 390px; max-width: calc(100vw - 24px); height: 560px; max-height: calc(100vh - 36px); background: #0d0d0d; border: 1px solid #2a2a2a; border-radius: 12px; display: flex; flex-direction: column; box-shadow: 0 10px 34px rgba(0,0,0,.65); }
+        .chat-head { display: flex; justify-content: space-between; align-items: center; padding: 11px 14px; border-bottom: 1px solid #1e1e1e; font-weight: 800; font-size: 13px; color: #eaf2ff; }
+        .chat-x { background: none; border: none; color: #888; cursor: pointer; font-size: 15px; }
+        .chat-focus { padding: 6px 12px; font-size: 11px; color: #6ea3d6; background: #11212f; border-bottom: 1px solid #1e2a36; display: flex; justify-content: space-between; }
+        .chat-clear { background: none; border: none; color: #557; cursor: pointer; font-size: 10px; }
+        .chat-msgs { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 9px; }
+        .chat-msg { font-size: 13px; line-height: 1.55; padding: 8px 11px; border-radius: 9px; max-width: 88%; white-space: pre-wrap; }
+        .chat-user { align-self: flex-end; background: #1a3a5c; color: #eaf2ff; }
+        .chat-bot { align-self: flex-start; background: #161616; border: 1px solid #222; color: #d2d6dc; }
+        .chat-empty { color: #555; font-size: 12px; text-align: center; margin: 24px 10px; line-height: 1.5; }
+        .chat-input { display: flex; gap: 6px; padding: 10px; border-top: 1px solid #1e1e1e; }
+        .chat-input input { flex: 1; background: #161616; border: 1px solid #2a2a2a; border-radius: 8px; padding: 8px 10px; color: #eee; font-size: 13px; }
+        .chat-input button { background: #1a6fd4; color: #fff; border: none; border-radius: 8px; padding: 0 14px; font-weight: 700; cursor: pointer; }
         .explain-queued { color: #444; font-style: italic; }
 
         @media (max-width: 900px) { .dashboard { grid-template-columns: 1fr; } }
@@ -296,6 +314,11 @@
             <div class="subsection-label" style="margin-top:10px;">Score Probability — Likelihood of Each Final Run Total Across Simulations</div>
             <div class="chart-container"><canvas id="chart-{{ r.game_id }}"></canvas></div>
 
+            <div class="ai-head">
+                <span class="subsection-label" style="margin:0;">AI Analysis</span>
+                <button class="discuss-btn" type="button"
+                        onclick="discussGame({{ r.game_id }}, '{{ r.away_abbr }} @ {{ r.home_abbr }}')">💬 Discuss</button>
+            </div>
             <div class="explain-box" id="explain-{{ r.game_id }}"><span class="explain-queued">⏳ In queue for analysis…</span></div>
 
             {% if r.lineup and (r.lineup.get('home') or r.lineup.get('away')) %}
@@ -515,6 +538,107 @@ async function autoExplainAll(gameIds) {
         });
     }
 }
+
+/* ── Chat assistant ── */
+let chatMessages = [];
+let chatFocusGame = null;
+let chatBusy = false;
+
+function toggleChat(show) {
+    const panel = document.getElementById('chat-panel');
+    const fab = document.getElementById('chat-fab');
+    const open = (show === undefined) ? (panel.style.display === 'none') : show;
+    panel.style.display = open ? 'flex' : 'none';
+    fab.style.display = open ? 'none' : 'block';
+    if (open) { renderChat(); document.getElementById('chat-text').focus(); }
+}
+
+function clearFocus() {
+    chatFocusGame = null;
+    document.getElementById('chat-focus').style.display = 'none';
+}
+
+function discussGame(gameId, label) {
+    chatFocusGame = { id: gameId, label: label };
+    const fb = document.getElementById('chat-focus');
+    fb.style.display = 'flex';
+    fb.querySelector('.chat-focus-label').textContent = '💬 ' + label;
+    toggleChat(true);
+    chatSend('Give me a quick rundown of this game and the biggest edge the model sees vs the market.');
+}
+
+function renderChat() {
+    const box = document.getElementById('chat-msgs');
+    if (!chatMessages.length) {
+        box.innerHTML = '<div class="chat-empty">Ask me about today\'s games, the betting edges vs ESPN, recent accuracy, or how the model works. Or hit <b>💬 Discuss</b> on any game.</div>';
+        return;
+    }
+    box.innerHTML = '';
+    for (const m of chatMessages) {
+        const d = document.createElement('div');
+        d.className = 'chat-msg ' + (m.role === 'user' ? 'chat-user' : 'chat-bot');
+        d.textContent = m.content || '…';
+        box.appendChild(d);
+    }
+    box.scrollTop = box.scrollHeight;
+}
+
+function chatSubmit(e) {
+    e.preventDefault();
+    const inp = document.getElementById('chat-text');
+    const text = inp.value.trim();
+    if (text && !chatBusy) { inp.value = ''; chatSend(text); }
+    return false;
+}
+
+async function chatSend(text) {
+    if (chatBusy) return;
+    chatBusy = true;
+    chatMessages.push({ role: 'user', content: text });
+    const bot = { role: 'assistant', content: '' };
+    chatMessages.push(bot);
+    renderChat();
+    try {
+        const resp = await fetch('/chat', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                messages: chatMessages.slice(0, -1),
+                game_id: chatFocusGame ? chatFocusGame.id : null,
+            }),
+        });
+        const reader = resp.body.getReader();
+        const dec = new TextDecoder();
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            bot.content += dec.decode(value, { stream: true });
+            renderChat();
+        }
+        if (!bot.content) { bot.content = '⚠ No response — is Ollama running?'; renderChat(); }
+    } catch (err) {
+        bot.content = '⚠ ' + err; renderChat();
+    } finally {
+        chatBusy = false;
+    }
+}
 </script>
+
+<button id="chat-fab" onclick="toggleChat()" title="Ask the assistant">💬 Ask</button>
+<div id="chat-panel" class="chat-panel" style="display:none">
+    <div class="chat-head">
+        <span>⚾ Dashboard Assistant</span>
+        <button class="chat-x" onclick="toggleChat(false)" title="Close">✕</button>
+    </div>
+    <div id="chat-focus" class="chat-focus" style="display:none">
+        <span class="chat-focus-label"></span>
+        <button class="chat-clear" onclick="clearFocus()">clear</button>
+    </div>
+    <div id="chat-msgs" class="chat-msgs"></div>
+    <form class="chat-input" onsubmit="return chatSubmit(event)">
+        <input id="chat-text" type="text" autocomplete="off"
+               placeholder="Ask about today's games, the model, history…">
+        <button type="submit">Send</button>
+    </form>
+</div>
 </body>
 </html>
