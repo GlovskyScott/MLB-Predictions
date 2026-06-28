@@ -169,3 +169,28 @@ def test_get_prediction_generates_and_persists_on_miss(tmp_path, mocker):
     assert out[0]['game_id'] == 7 and out[0]['home_win_pct'] == 60.0
     # persisted under the current version
     assert P.load_prediction(tmp_path, 'vGEN', '2026-06-26')[0]['game_id'] == 7
+
+
+def test_run_daily_simulation_enriches_stored_core(mocker):
+    import src.app as app
+    mocker.patch('src.app.get_prediction', return_value=[{
+        'game_id': 7, 'game_date': '2026-06-26', 'home_id': 147, 'away_id': 111,
+        'home_name': 'NYY', 'away_name': 'BOS', 'home_win_pct': 60.0, 'away_win_pct': 40.0,
+        'predicted_score': '5-3', 'median_home_score': 5.0, 'median_away_score': 3.0}])
+    mocker.patch('src.app.get_schedule', return_value=[{
+        'game_id': 7, 'game_date': '2026-06-26', 'home_id': 147, 'away_id': 111,
+        'home_name': 'NYY', 'away_name': 'BOS', 'venue_id': 1, 'venue_name': 'YS',
+        'game_datetime': '2026-06-26T23:05:00Z',
+        'home_probable_pitcher': 'A', 'away_probable_pitcher': 'B'}])
+    mocker.patch('src.app.build_game_features', return_value={'elevation_ft': 10})
+    mocker.patch('src.app.get_stadium', return_value={'roof': 'open', 'lat': 40.0, 'lon': -73.0})
+    mocker.patch('src.app.get_weather_for_game', return_value={'is_dome': False})
+    mocker.patch('src.app.get_game_lineup', return_value={})
+    mocker.patch('src.app.get_team_meta', return_value={
+        'logo_url': 'L', 'primary': '#132448', 'secondary': '#C4CED4', 'abbr': 'X'})
+
+    out = app.run_daily_simulation('2026-06-26')
+    g = out[0]
+    assert g['home_win_pct'] == 60.0          # from frozen core
+    assert g['home_logo'] == 'L'              # enrichment
+    assert g['weather']['is_dome'] is False   # enrichment

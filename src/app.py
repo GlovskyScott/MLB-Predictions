@@ -258,71 +258,53 @@ def get_prediction(sim_date: str) -> list[dict]:
     return cores
 
 
+def _enrich_game(game: dict, core: dict) -> dict:
+    """Combine a schedule game shell with its frozen prediction core and the
+    presentation/context fields (weather, lineup, features, logos, colors) that
+    are re-derived at render time rather than persisted in the artifact."""
+    features = build_game_features(game, year=2026)
+    stadium = get_stadium(game['home_id']) or {}
+    is_dome = stadium.get('roof') == 'dome'
+    weather = get_weather_for_game(
+        lat=stadium.get('lat', 39.0), lon=stadium.get('lon', -95.0),
+        game_datetime=game.get('game_datetime', ''), is_dome=is_dome,
+    )
+    home_meta = get_team_meta(game['home_id'])
+    away_meta = get_team_meta(game['away_id'])
+    lineup = get_game_lineup(game.get('game_id'))
+    return {
+        **game,
+        **core,
+        'weather': weather,
+        'lineup': lineup,
+        'features': features,
+        'elevation_ft': int(features.get('elevation_ft', 0)),
+        'home_pitcher': game.get('home_probable_pitcher', 'TBD'),
+        'away_pitcher': game.get('away_probable_pitcher', 'TBD'),
+        'home_logo': home_meta['logo_url'],
+        'away_logo': away_meta['logo_url'],
+        'home_color': home_meta['primary'],
+        'away_color': away_meta['primary'],
+        'home_color2': home_meta['secondary'],
+        'away_color2': away_meta['secondary'],
+        'home_abbr': home_meta['abbr'],
+        'away_abbr': away_meta['abbr'],
+        'home_color_rgb': _hex_to_rgb_str(home_meta['primary']),
+        'away_color_rgb': _hex_to_rgb_str(away_meta['primary']),
+        'home_bar_color': _bar_color(home_meta['primary'], home_meta['secondary']),
+        'away_bar_color': _bar_color(away_meta['primary'], away_meta['secondary']),
+    }
+
+
 def run_daily_simulation(sim_date: str = None, n_simulations: int = 1000) -> list[dict]:
     if sim_date is None:
         sim_date = date.today().strftime('%Y-%m-%d')
 
-    models = _get_models()
-    inning_model = _get_inning_model()
-    games = get_schedule(sim_date)
+    cores = {c['game_id']: c for c in get_prediction(sim_date)}
     results = []
-
-    for game in games:
+    for game in get_schedule(sim_date):
         try:
-            features = build_game_features(game, year=2026)
-            stadium = get_stadium(game['home_id']) or {}
-            is_dome = stadium.get('roof') == 'dome'
-
-            weather = get_weather_for_game(
-                lat=stadium.get('lat', 39.0),
-                lon=stadium.get('lon', -95.0),
-                game_datetime=game.get('game_datetime', ''),
-                is_dome=is_dome,
-            )
-
-            if models:
-                prediction = predict_game(features, models)
-            else:
-                prediction = {
-                    'home_win_prob': 0.5, 'away_win_prob': 0.5,
-                    'predicted_home_runs': 4.5, 'predicted_away_runs': 4.2,
-                }
-
-            sim = simulate_game(prediction, n_simulations=n_simulations)
-
-            # Override simulation-derived inning scoring pcts with ML model predictions
-            if inning_model:
-                try:
-                    inning_probs = predict_inning_probs(features, inning_model)
-                    sim['home_innings_scoring_pct'] = inning_probs['home']
-                    sim['away_innings_scoring_pct'] = inning_probs['away']
-                except Exception:
-                    pass
-            home_meta = get_team_meta(game['home_id'])
-            away_meta = get_team_meta(game['away_id'])
-            lineup = get_game_lineup(game.get('game_id'))
-            results.append({
-                **game,
-                **sim,
-                'weather': weather,
-                'lineup': lineup,
-                'features': features,
-                'elevation_ft': int(features.get('elevation_ft', 0)),
-                'home_pitcher': game.get('home_probable_pitcher', 'TBD'),
-                'away_pitcher': game.get('away_probable_pitcher', 'TBD'),
-                'home_logo': home_meta['logo_url'],
-                'away_logo': away_meta['logo_url'],
-                'home_color': home_meta['primary'],
-                'away_color': away_meta['primary'],
-                'home_color2': home_meta['secondary'],
-                'away_color2': away_meta['secondary'],
-                'home_abbr': home_meta['abbr'],
-                'away_abbr': away_meta['abbr'],
-                'home_color_rgb': _hex_to_rgb_str(home_meta['primary']),
-                'away_color_rgb': _hex_to_rgb_str(away_meta['primary']),
-                'home_bar_color': _bar_color(home_meta['primary'], home_meta['secondary']),
-                'away_bar_color': _bar_color(away_meta['primary'], away_meta['secondary']),
-            })
+            results.append(_enrich_game(game, cores.get(game['game_id'], {})))
         except Exception as e:
             results.append({**game, 'error': str(e)})
 
