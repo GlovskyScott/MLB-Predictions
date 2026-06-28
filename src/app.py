@@ -745,6 +745,126 @@ def _backfill_results_cache(n_days: int = 90) -> None:
         pool.map(_backfill_one, todo)
 
 
+def _fmt_short_date(d: str) -> str:
+    """'2026-06-27' -> 'Jun 27' (platform-independent, no zero-pad)."""
+    try:
+        dt = datetime.strptime(d, '%Y-%m-%d')
+        return f"{dt.strftime('%b')} {dt.day}"
+    except Exception:
+        return d
+
+
+def _weather_str(g: dict) -> str:
+    """One-line weather summary for the game-detail card."""
+    w = g.get('weather') or {}
+    if w.get('is_dome'):
+        t = w.get('temperature_f')
+        return f"Dome · {round(t)}°F" if t is not None else "Dome"
+    t = w.get('temperature_f')
+    if t is None:
+        return "—"
+    parts = [f"{round(t)}°F"]
+    ws = w.get('wind_speed_mph')
+    if ws is not None:
+        parts.append(f"{round(ws)} mph")
+    h = w.get('humidity_pct')
+    if h is not None:
+        parts.append(f"{round(h)}% RH")
+    return " · ".join(parts)
+
+
+def _game_ui(g: dict) -> dict | None:
+    """Project an enriched sim game into the JSON the Edge UI consumes.
+
+    Moneyline only. All numbers are real model output; nothing is mocked."""
+    if g.get('error') or 'home_win_pct' not in g:
+        return None
+    away_pct = round(g.get('away_win_pct', 50.0))
+    home_pct = round(g.get('home_win_pct', 50.0))
+    fav_home = home_pct >= away_pct
+    pick = g.get('home_abbr') if fav_home else g.get('away_abbr')
+    pick_pct = home_pct if fav_home else away_pct
+    mk = g.get('market') or {}
+    lines = g.get('lines') or {}
+    has_edge = bool(mk) and (mk.get('edge_ml_pct') or 0) > 0
+    model_ml = lines.get('ml_home') if fav_home else lines.get('ml_away')
+    market_ml = (mk.get('ml_home') if fav_home else mk.get('ml_away')) if mk else None
+    sd = g.get('score_distribution') or {}
+    lineup = g.get('lineup') or {}
+    home_color = g.get('home_bar_color') or g.get('home_color') or '#0064c8'
+    away_color = g.get('away_bar_color') or g.get('away_color') or '#c83232'
+    ma, mh = g.get('modal_away_score'), g.get('modal_home_score')
+    if ma is None or mh is None:  # fall back to medians (real cores always have modal)
+        ma, mh = round(g.get('median_away_score', 0)), round(g.get('median_home_score', 0))
+    return {
+        'id': g.get('game_id'),
+        'away': g.get('away_abbr'), 'home': g.get('home_abbr'),
+        'awayName': g.get('away_name'), 'homeName': g.get('home_name'),
+        'awayLogo': g.get('away_logo'), 'homeLogo': g.get('home_logo'),
+        'awayColor': away_color, 'homeColor': home_color,
+        'awayTint': away_color + '24', 'homeTint': home_color + '24',
+        'awayPct': away_pct, 'homePct': home_pct,
+        'pick': pick, 'pickPct': pick_pct, 'hasEdge': has_edge,
+        'edgePct': mk.get('edge_ml_pct', 0) if mk else 0,
+        'edgeSide': mk.get('edge_ml_side') if mk else None,
+        'score': f"{ma}–{mh}",
+        'utc': g.get('game_datetime') or '',
+        'modelML': model_ml, 'marketML': market_ml,
+        'scoreDist': {'labels': sd.get('labels', []),
+                      'away': sd.get('away', []), 'home': sd.get('home', [])},
+        'nSims': g.get('n_simulations', N_SIMULATIONS),
+        'innings': {'away': g.get('away_innings_dist') or [],
+                    'home': g.get('home_innings_dist') or [],
+                    'both': g.get('combined_innings_dist') or []},
+        'awayP': g.get('away_pitcher', 'TBD'), 'homeP': g.get('home_pitcher', 'TBD'),
+        'venue': g.get('venue_name', ''), 'weather': _weather_str(g),
+        'awayLineup': lineup.get('away', []), 'homeLineup': lineup.get('home', []),
+    }
+
+
+def _track_ui(last_7: dict, last_30: dict, last_90: dict,
+              yesterday: dict, yesterday_date: str) -> dict:
+    """Track Record tab payload: 7/30/90 summary, yesterday's graded games,
+    and the last-7-days daily accuracy bars."""
+    def _summary(label, agg):
+        # Headline = Consensus (market-blended) accuracy — the graded pick of
+        # record; model-only accuracy is shown alongside for comparison (PR #15).
+        acc = agg.get('consensus_accuracy', agg.get('winner_accuracy')) or 0
+        return {'label': label, 'acc': acc,
+                'model': agg.get('model_accuracy'),
+                'games': agg.get('total_games', 0),
+                'err': agg.get('avg_score_err'),
+                'good': acc >= 53}
+
+    yrows = []
+    for r in (yesterday.get('games') or []):
+        aw = r.get('away_abbr') or get_team_meta(r['away_id'])['abbr']
+        hw = r.get('home_abbr') or get_team_meta(r['home_id'])['abbr']
+        # HIT/MISS grades the Consensus moneyline pick (the pick of record),
+        # which can differ from the model's projected score — so show the graded
+        # pick, not the predicted score, or the row looks contradictory.
+        pick = hw if r.get('predicted_home_won') else aw
+        yrows.append({
+            'away': aw, 'home': hw,
+            'awayLogo': r.get('away_logo'), 'homeLogo': r.get('home_logo'),
+            'actual': f"{r.get('actual_away_score')}–{r.get('actual_home_score')}",
+            'pick': pick,
+            'win': bool(r.get('winner_correct')),
+        })
+
+    daily = [{'date': _fmt_short_date(d['result_date']),
+              'n': d.get('n_completed', 0),
+              'acc': round(d.get('consensus_accuracy', d.get('winner_accuracy')) or 0)}
+             for d in (last_7.get('daily') or [])]
+
+    return {
+        'summary': [_summary('7 days', last_7), _summary('30 days', last_30),
+                    _summary('90 days', last_90)],
+        'yesterday': yrows, 'yDate': _fmt_short_date(yesterday_date),
+        'daily': daily,
+    }
+
+
 def create_app(testing: bool = False) -> Flask:
     app = Flask(__name__, template_folder='../templates', static_folder='../static')
     app.config['TESTING'] = testing
@@ -774,20 +894,27 @@ def create_app(testing: bool = False) -> Flask:
                 _results_cache = {}
 
         last_7 = _aggregate_days(7)
+        last_30 = _aggregate_days(30)
         last_90 = _aggregate_days(90)
         meta = _read_model_meta()
         cur = _current_version()
         model_name = next((e.get('name') for e in _pred.read_versions(_DATA_DIR)
                            if e.get('version') == cur), None) or f"v{meta.get('feature_version', '?')}"
 
-        return render_template('index.html',
-                               results=_simulation_cache, sim_date=today,
-                               top_edges=_top_edges(_simulation_cache),
-                               yesterday=_results_cache, yesterday_date=yesterday,
-                               last_7=last_7, last_90=last_90,
-                               model_name=model_name,
-                               model_n_games=meta.get('n_games', '?'),
-                               model_years=meta.get('training_years', []))
+        games_ui = [u for g in _simulation_cache if (u := _game_ui(g)) is not None]
+        payload = {
+            'dateLabel': date.today().strftime('%a, %b ') + str(date.today().day),
+            'accAccuracy': round(last_7.get('consensus_accuracy', last_7.get('winner_accuracy')) or 0),
+            'games': games_ui,
+            'track': _track_ui(last_7, last_30, last_90, _results_cache, yesterday),
+            'model': {
+                'name': model_name,
+                'nGames': meta.get('n_games', '?'),
+                'years': meta.get('training_years', []),
+            },
+        }
+
+        return render_template('index.html', payload=payload)
 
     @app.route('/refresh', methods=['POST'])
     def refresh():
