@@ -228,6 +228,32 @@ def test_bootstrap_predictions_cache_noop_when_present(tmp_path, mocker):
     run.assert_not_called()  # store present -> no download
 
 
+def test_get_market_odds_averages_books(mocker):
+    import src.fetcher as f
+    f._market_odds_cache.clear()
+    sb = {'events': [{'id': '1', 'competitions': [{'competitors': [
+        {'homeAway': 'home', 'team': {'displayName': 'Boston Red Sox'}},
+        {'homeAway': 'away', 'team': {'displayName': 'New York Yankees'}}]}]}]}
+    summary = {'pickcenter': [
+        {'overUnder': 8.0, 'overOdds': -120, 'underOdds': -100,
+         'homeTeamOdds': {'moneyLine': 100}, 'awayTeamOdds': {'moneyLine': -120}},
+        {'overUnder': 9.0, 'overOdds': -100, 'underOdds': -120,
+         'homeTeamOdds': {'moneyLine': 120}, 'awayTeamOdds': {'moneyLine': -140}}]}
+
+    def fake_get(url, params=None, timeout=None):
+        m = MagicMock()
+        m.json.return_value = sb if 'scoreboard' in url else summary
+        return m
+    mocker.patch('src.fetcher.requests.get', side_effect=fake_get)
+
+    out = f.get_market_odds('2026-06-27')
+    k = f.market_key('New York Yankees', 'Boston Red Sox')
+    assert k in out
+    assert out[k]['total'] == 8.5           # (8 + 9)/2
+    assert out[k]['ml_away'] == -130.0      # (-120 + -140)/2
+    assert out[k]['n_books'] == 2
+
+
 def test_get_pitching_stats_computes_real_fip(mocker, tmp_path):
     # FIP must be the component-based metric, not a copy of ERA.
     mocker.patch('src.fetcher._DATA_DIR', tmp_path)

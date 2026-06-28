@@ -11,6 +11,7 @@ from src.fetcher import (
     get_bullpen_stats, get_season_schedule, get_weather_for_game, get_game_linescore,
     get_game_lineup, bootstrap_data_cache, bootstrap_model_cache,
     bootstrap_predictions_cache, refresh_schedule_date,
+    get_market_odds, market_key,
 )
 from src.features import build_game_features, build_inning_feature_row, _NEUTRAL_WEATHER, FEATURE_VERSION, FEATURE_COLUMNS
 from src.model import (
@@ -25,6 +26,7 @@ from src.colors import hex_to_rgb_str as _hex_to_rgb_str, bar_color as _bar_colo
 from src.explanations import (
     _explanation_cache, _load_disk_explanations, _build_explain_prompt,
     _stream_ollama, _pregenerate_explanations,
+    _stream_picks, _pregenerate_picks, _load_disk_picks,
 )
 from src.training import (
     get_models as _get_models, get_inning_model as _get_inning_model,
@@ -120,6 +122,75 @@ def get_prediction(sim_date: str) -> list[dict]:
     return cores
 
 
+def _american(p: float) -> str:
+    """Fair (no-vig) American odds for a probability p."""
+    p = min(max(p, 0.01), 0.99)
+    odds = round(-100 * p / (1 - p)) if p >= 0.5 else round(100 * (1 - p) / p)
+    return f"{odds:+d}"
+
+
+def _market_lines(game: dict) -> dict:
+    """Derive model-implied, sportsbook-style betting lines from a prediction core.
+
+    Real lines are fixed numbers with odds attached, not continuous expectations:
+    - moneyline: fair American odds from the win probability
+    - run line:  fixed ±1.5 (MLB standard), odds = P(favorite wins by ≥2)
+    - total:     a .5/.0 line near the expected total, with fair over/under odds
+
+    The run-margin and total distributions are reconstructed by convolving the
+    stored per-team score histograms (the simulator draws the teams' runs
+    independently, so the convolution matches its joint distribution). All values
+    are display-ready strings.
+    """
+    from collections import defaultdict
+
+    ml_home = _american(game.get('home_win_pct', 50.0) / 100.0)
+    ml_away = _american(game.get('away_win_pct', 50.0) / 100.0)
+    blank = {'ml_home': ml_home, 'ml_away': ml_away, 'spread_home': '—',
+             'spread_away': '—', 'total_line': '—', 'total_over': '', 'total_under': ''}
+
+    dist = game.get('score_distribution') or {}
+    home_counts, away_counts = dist.get('home') or [], dist.get('away') or []
+    hsum, asum = sum(home_counts), sum(away_counts)
+    if not hsum or not asum:
+        return blank
+
+    hp = [c / hsum for c in home_counts]   # P(home runs == i)
+    ap = [c / asum for c in away_counts]    # P(away runs == j)
+    margin, total = defaultdict(float), defaultdict(float)
+    for h, ph in enumerate(hp):
+        if not ph:
+            continue
+        for a, pa in enumerate(ap):
+            if pa:
+                margin[h - a] += ph * pa
+                total[h + a] += ph * pa
+
+    # ---- Total: nearest half-run line, fair over/under odds ----
+    exp_total = sum(t * p for t, p in total.items())
+    line = round(exp_total * 2) / 2                      # ends in .0 or .5
+    p_over = sum(p for t, p in total.items() if t > line)
+    p_under = sum(p for t, p in total.items() if t < line)
+    denom = (p_over + p_under) or 1.0                    # drop pushes on a .0 line
+    total_line = f"{line:.1f}"
+    total_over, total_under = _american(p_over / denom), _american(p_under / denom)
+
+    # ---- Run line: fixed 1.5, favorite by win probability ----
+    fav_home = game.get('home_win_pct', 50.0) >= game.get('away_win_pct', 50.0)
+    if fav_home:
+        p_cover = sum(p for d, p in margin.items() if d >= 2)   # home wins by ≥2
+        spread_home = f"-1.5 {_american(p_cover)}"
+        spread_away = f"+1.5 {_american(1 - p_cover)}"
+    else:
+        p_cover = sum(p for d, p in margin.items() if d <= -2)  # away wins by ≥2
+        spread_away = f"-1.5 {_american(p_cover)}"
+        spread_home = f"+1.5 {_american(1 - p_cover)}"
+
+    return {'ml_home': ml_home, 'ml_away': ml_away,
+            'spread_home': spread_home, 'spread_away': spread_away,
+            'total_line': total_line, 'total_over': total_over, 'total_under': total_under}
+
+
 def _enrich_game(game: dict, core: dict) -> dict:
     """Combine a schedule game shell with its frozen prediction core and the
     presentation/context fields (weather, lineup, features, logos, colors) that
@@ -137,6 +208,7 @@ def _enrich_game(game: dict, core: dict) -> dict:
     return {
         **game,
         **core,
+        'lines': _market_lines({**game, **core}),
         'weather': weather,
         'lineup': lineup,
         'features': features,
@@ -158,15 +230,89 @@ def _enrich_game(game: dict, core: dict) -> dict:
     }
 
 
+def _market_compare(game: dict, mk: dict) -> dict:
+    """Format averaged market odds for display and flag where the model disagrees."""
+    def odds(v):
+        return f"{int(round(v)):+d}" if v is not None else '—'
+
+    lines = game.get('lines') or {}
+    out = {
+        'total': f"{mk['total']:.1f}" if mk.get('total') is not None else '—',
+        'over_odds': odds(mk.get('over_odds')), 'under_odds': odds(mk.get('under_odds')),
+        'ml_home': odds(mk.get('ml_home')), 'ml_away': odds(mk.get('ml_away')),
+        'n_books': mk.get('n_books', 0), 'total_edge': None, 'ml_edge': None,
+    }
+    # Total edge: model's total line vs the market number.
+    try:
+        diff = float(lines.get('total_line')) - float(mk['total'])
+        if abs(diff) >= 0.5:
+            out['total_edge'] = f"model {'OVER' if diff > 0 else 'UNDER'} {abs(diff):.1f}"
+    except (TypeError, ValueError):
+        pass
+    # Moneyline edge: model and market favor different sides.
+    mh, ma = mk.get('ml_home'), mk.get('ml_away')
+    if mh is not None and ma is not None:
+        model_fav_home = game.get('home_win_pct', 50) >= game.get('away_win_pct', 50)
+        if (mh < ma) != model_fav_home:
+            out['ml_edge'] = f"model likes {game.get('home_abbr') if model_fav_home else game.get('away_abbr')}"
+    return out
+
+
+def _edge_metrics(game: dict, mk: dict) -> dict | None:
+    """Numeric model-vs-market comparison + an edge score, for ranking 'Picks'."""
+    lines = game.get('lines') or {}
+    try:
+        model_total = float(lines.get('total_line'))
+    except (TypeError, ValueError):
+        model_total = None
+    mkt_total = mk.get('total')
+    if model_total is None or mkt_total is None:
+        return None
+
+    def implied(ml):
+        if ml is None:
+            return None
+        return (-ml) / ((-ml) + 100) if ml < 0 else 100 / (ml + 100)
+
+    ih, ia = implied(mk.get('ml_home')), implied(mk.get('ml_away'))
+    mkt_home_win = ih / (ih + ia) if (ih and ia) else None        # de-vigged
+    model_home_win = game.get('home_win_pct', 50) / 100.0
+    model_fav_home = model_home_win >= 0.5
+    mkt_fav_home = mkt_home_win >= 0.5 if mkt_home_win is not None else model_fav_home
+    ml_prob_edge = abs(model_home_win - mkt_home_win) if mkt_home_win is not None else 0.0
+    total_diff = model_total - mkt_total
+    return {
+        'away_abbr': game.get('away_abbr'), 'home_abbr': game.get('home_abbr'),
+        'model_total': model_total, 'mkt_total': mkt_total, 'total_diff': total_diff,
+        'model_home_win': model_home_win * 100,
+        'model_fav': game.get('home_abbr') if model_fav_home else game.get('away_abbr'),
+        'mkt_fav': game.get('home_abbr') if mkt_fav_home else game.get('away_abbr'),
+        'fav_disagree': model_fav_home != mkt_fav_home,
+        'score': abs(total_diff) + 3.0 * ml_prob_edge + (1.0 if model_fav_home != mkt_fav_home else 0.0),
+    }
+
+
+def _picks_payload(games: list, top: int = 4) -> list:
+    """The day's strongest model-vs-market edges, ranked, for the Picks summary."""
+    edges = [g['edge'] for g in games if g.get('edge')]
+    edges.sort(key=lambda e: e['score'], reverse=True)
+    return edges[:top]
+
+
 def run_daily_simulation(sim_date: str = None) -> list[dict]:
     if sim_date is None:
         sim_date = date.today().strftime('%Y-%m-%d')
 
     cores = {c['game_id']: c for c in get_prediction(sim_date)}
+    market = get_market_odds(sim_date)
     results = []
     for game in get_schedule(sim_date):
         try:
-            results.append(_enrich_game(game, cores.get(game['game_id'], {})))
+            g = _enrich_game(game, cores.get(game['game_id'], {}))
+            mk = market.get(market_key(g.get('away_name', ''), g.get('home_name', '')))
+            g['market'] = _market_compare(g, mk) if mk else None
+            g['edge'] = _edge_metrics(g, mk) if mk else None
+            results.append(g)
         except Exception as e:
             results.append({**game, 'error': str(e)})
 
@@ -419,6 +565,9 @@ def create_app(testing: bool = False) -> Flask:
             _last_simulated_date = today
             _load_disk_explanations(today)
             threading.Thread(target=_pregenerate_explanations, args=(_simulation_cache, today), daemon=True).start()
+            edges = _picks_payload(_simulation_cache)
+            if edges:
+                threading.Thread(target=_pregenerate_picks, args=(edges, today), daemon=True).start()
 
         if not _results_cache or _last_results_date != yesterday:
             try:
@@ -439,6 +588,7 @@ def create_app(testing: bool = False) -> Flask:
                                yesterday=_results_cache, yesterday_date=yesterday,
                                last_7=last_7, last_90=last_90,
                                model_name=model_name,
+                               has_picks=bool(_picks_payload(_simulation_cache)),
                                model_n_games=meta.get('n_games', '?'),
                                model_years=meta.get('training_years', []))
 
@@ -497,6 +647,19 @@ def create_app(testing: bool = False) -> Flask:
         summary = _version_summary(version)
         return render_template('archive_version.html', version=version, meta=meta,
                                summary=summary, is_current=(version == _current_version()))
+
+    @app.route('/picks')
+    def picks():
+        today = date.today().strftime('%Y-%m-%d')
+        edges = _picks_payload(_simulation_cache)
+        headers = {'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'}
+        if not edges:
+            def _none():
+                yield f"data: {json.dumps({'text': 'No standout edges vs the market today.'})}\n\n"
+                yield "data: [DONE]\n\n"
+            return Response(stream_with_context(_none()), mimetype='text/event-stream', headers=headers)
+        return Response(stream_with_context(_stream_picks(edges, today)),
+                        mimetype='text/event-stream', headers=headers)
 
     @app.route('/explain/<int:game_id>')
     def explain(game_id: int):

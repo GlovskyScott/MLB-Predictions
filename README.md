@@ -178,6 +178,7 @@ Note: in-process state (today's predictions, rollup caches, model objects) is **
 
 Each game card shows:
 - **Win-probability bar** (home vs away, from the simulation)
+- **Betting board** — the model's implied **run line, total, and moneyline** (fair, no-vig; spread/total reconstructed from the simulated run distribution), compared against the **average live sportsbook line** pulled from ESPN's public API (no key). Green badges flag where the model disagrees with the market (e.g. *model OVER 1.0*, *model likes HOU*).
 - **Predicted score** (median final score across simulations)
 - **Game start time** (local, converted from UTC in the browser)
 - **Starting pitchers** with handedness

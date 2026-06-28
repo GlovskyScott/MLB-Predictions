@@ -175,6 +175,7 @@ def test_get_prediction_generates_and_persists_on_miss(tmp_path, mocker):
 
 def test_run_daily_simulation_enriches_stored_core(mocker):
     import src.app as app
+    mocker.patch('src.app.get_market_odds', return_value={})  # no live ESPN call
     mocker.patch('src.app.get_prediction', return_value=[{
         'game_id': 7, 'game_date': '2026-06-26', 'home_id': 147, 'away_id': 111,
         'home_name': 'NYY', 'away_name': 'BOS', 'home_win_pct': 60.0, 'away_win_pct': 40.0,
@@ -335,3 +336,68 @@ def test_actuals_for_date_memoizes_settled_dates(mocker):
     assert a1 == a2 and 1 in a1
     assert '2026-03-15' in app._actuals_cache
     assert sched.call_count == 1               # second call didn't recompute
+
+
+def test_market_lines_runline_total_and_moneyline():
+    import src.app as app
+    # home runs ~ {4: .5, 5: .5} (mean 4.5); away runs ~ {3: .5, 4: .5} (mean 3.5)
+    core = {
+        'home_win_pct': 60.0, 'away_win_pct': 40.0,
+        'score_distribution': {'labels': [0, 1, 2, 3, 4, 5, 6],
+                               'home': [0, 0, 0, 0, 50, 50, 0],
+                               'away': [0, 0, 0, 50, 50, 0, 0]},
+    }
+    L = app._market_lines(core)
+    # moneyline: fair odds from win prob
+    assert L['ml_home'] == '-150' and L['ml_away'] == '+150'
+    # run line is the fixed 1.5 with odds; home is the favorite
+    assert L['spread_home'].startswith('-1.5 ') and L['spread_away'].startswith('+1.5 ')
+    # P(home wins by >=2) = 0.25 -> +300 ; the other side -300
+    assert L['spread_home'] == '-1.5 +300' and L['spread_away'] == '+1.5 -300'
+    # total line ends in .0/.5; here expected total 8.0
+    assert L['total_line'] == '8.0'
+    assert L['total_line'].endswith(('.0', '.5'))
+    assert L['total_over'] == '-100' and L['total_under'] == '-100'
+
+
+def test_market_lines_blank_without_distribution():
+    import src.app as app
+    L = app._market_lines({'home_win_pct': 55.0, 'away_win_pct': 45.0})
+    assert L['ml_home'] == '-122' and L['spread_home'] == '—' and L['total_line'] == '—'
+
+
+def test_market_compare_flags_edges():
+    import src.app as app
+    game = {'home_win_pct': 55.0, 'away_win_pct': 45.0, 'home_abbr': 'BOS', 'away_abbr': 'NYY',
+            'lines': {'total_line': '9.5'}}
+    mk = {'total': 8.0, 'over_odds': -110, 'under_odds': -110,
+          'ml_home': 130, 'ml_away': -150, 'n_books': 2}
+    c = app._market_compare(game, mk)
+    assert c['total'] == '8.0' and c['ml_home'] == '+130' and c['ml_away'] == '-150'
+    assert 'OVER 1.5' in c['total_edge']          # model 9.5 vs market 8.0
+    assert c['ml_edge'] == 'model likes BOS'      # market favors NYY, model favors BOS
+
+
+def test_edge_metrics_and_picks_ranking():
+    import src.app as app
+    g1 = {'home_abbr': 'BOS', 'away_abbr': 'NYY', 'home_win_pct': 55.0, 'away_win_pct': 45.0,
+          'lines': {'total_line': '9.5'}}
+    mk1 = {'total': 8.0, 'ml_home': 130, 'ml_away': -150}
+    e1 = app._edge_metrics(g1, mk1)
+    assert abs(e1['total_diff'] - 1.5) < 1e-9 and e1['fav_disagree'] is True and e1['score'] > 1.5
+    # a game with no disagreement scores lower
+    g2 = {'home_abbr': 'LAD', 'away_abbr': 'SF', 'home_win_pct': 58.0, 'away_win_pct': 42.0,
+          'lines': {'total_line': '8.0'}}
+    mk2 = {'total': 8.0, 'ml_home': -160, 'ml_away': 140}
+    e2 = app._edge_metrics(g2, mk2)
+    games = [{'edge': e1}, {'edge': e2}, {'edge': None}]
+    picks = app._picks_payload(games)
+    assert picks[0] is e1 and len(picks) == 2     # ranked, None dropped
+
+
+def test_build_picks_prompt_lists_games():
+    from src.explanations import _build_picks_prompt
+    p = _build_picks_prompt([{'away_abbr': 'NYY', 'home_abbr': 'BOS', 'model_total': 9.5,
+                              'mkt_total': 8.0, 'total_diff': 1.5, 'model_home_win': 55.0,
+                              'model_fav': 'BOS', 'mkt_fav': 'NYY', 'fav_disagree': True}])
+    assert 'NYY @ BOS' in p and 'Picks of the Day' in p and 'OVER' in p
