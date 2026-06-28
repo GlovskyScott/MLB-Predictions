@@ -155,7 +155,7 @@ function renderTrack() {
     <div style="font:500 10px system-ui;color:#565c68;margin-top:3px;">Consensus${s.model != null ? ' · model ' + s.model + '%' : ''}</div></div>`;
   const yrow = y => `<div style="display:flex;align-items:center;gap:12px;padding:11px 4px;border-top:1px solid #161a21;">
     <div style="flex:1;min-width:0;display:flex;align-items:center;gap:6px;font:700 13px system-ui;color:#e3e6eb;">${img(y.awayLogo, 18)}${esc(y.away)}<span style="color:#4d525d;font-weight:500;">@</span>${img(y.homeLogo, 18)}${esc(y.home)}</div>
-    <div style="text-align:right;"><div class="num" style="font:700 13px system-ui;color:#dfe2e8;">${esc(y.actual)}</div><div class="num" style="font:500 10px system-ui;color:#646a76;margin-top:1px;">pred ${esc(y.pred)}</div></div>
+    <div style="text-align:right;"><div class="num" style="font:700 13px system-ui;color:#dfe2e8;">${esc(y.actual)}</div><div style="font:500 10px system-ui;color:#646a76;margin-top:1px;">pick ${esc(y.pick)}</div></div>
     <div style="min-width:54px;text-align:center;"><span style="font:800 10.5px system-ui;padding:3px 9px;border-radius:20px;color:${y.win ? '#4caf50' : '#ef5350'};background:${y.win ? 'rgba(76,175,80,.14)' : 'rgba(239,83,80,.14)'};">${y.win ? '✓ HIT' : '✗ MISS'}</span></div></div>`;
   const drow = d => `<div style="display:flex;align-items:center;gap:12px;padding:8px 4px;">
     <div style="width:54px;font:500 11.5px system-ui;color:#9aa0ac;">${esc(d.date)}</div>
@@ -312,49 +312,59 @@ function renderDetail() {
 }
 
 /* ---------- main render ---------- */
-function render() {
+// scrollTop=true on navigation (tab switch, open/close game); pass false for
+// in-place toggles (inning view, lineups, sort) so the page doesn't jump.
+function render(scrollTop = true) {
+  const y = window.scrollY;   // preserve position across in-place re-renders
   renderHeader();
   const screen = document.getElementById('screen');
   if (state.openId !== null) {
     screen.innerHTML = renderDetail();
     wireDetail();
+    setExplain(state.openId);   // restore the AI read after the DOM is rebuilt
   } else if (state.tab === 'today') {
     screen.innerHTML = renderToday();
     screen.querySelectorAll('[data-open]').forEach(el => el.onclick = () => openGame(+el.dataset.open));
-    screen.querySelectorAll('[data-sort]').forEach(el => el.onclick = () => { state.sort = el.dataset.sort; render(); });
+    screen.querySelectorAll('[data-sort]').forEach(el => el.onclick = () => { state.sort = el.dataset.sort; render(false); });
   } else if (state.tab === 'track') {
     screen.innerHTML = renderTrack();
   } else {
     screen.innerHTML = renderSettings();
   }
-  window.scrollTo(0, 0);
+  window.scrollTo(0, scrollTop ? 0 : y);
 }
 function openGame(id) { state.openId = id; state.showLineups = false; state.innView = 'both'; render(); streamExplanation(id); }
 function wireDetail() {
   const g = gameById(state.openId);
   document.getElementById('detailBack').onclick = () => { state.openId = null; render(); };
-  document.getElementById('lineupToggle').onclick = () => { state.showLineups = !state.showLineups; render(); };
+  document.getElementById('lineupToggle').onclick = () => { state.showLineups = !state.showLineups; render(false); };
   document.getElementById('detailDiscuss').onclick = () => discussGame(g.id, `${g.away} @ ${g.home}`);
-  document.querySelectorAll('[data-inn]').forEach(el => el.onclick = () => { state.innView = el.dataset.inn; render(); });
+  document.querySelectorAll('[data-inn]').forEach(el => el.onclick = () => { state.innView = el.dataset.inn; render(false); });
 }
 
 /* ---------- AI read (SSE /explain) ---------- */
-const explainCache = {};
-function streamExplanation(gameId) {
+// Buffer the streamed text per game so it survives in-place re-renders (e.g.
+// toggling the inning view rebuilds the detail DOM). setExplain repaints the
+// current box from the buffer; the stream is opened at most once per game.
+const explainText = {};   // gameId -> latest text (undefined = not started)
+function setExplain(gameId) {
   const box = document.getElementById('explain-' + gameId);
-  if (!box) return;
-  if (explainCache[gameId]) { box.textContent = explainCache[gameId]; return; }
+  if (box) box.textContent = explainText[gameId] || 'Reading the matchup…';
+}
+function streamExplanation(gameId) {
+  if (explainText[gameId] !== undefined) { setExplain(gameId); return; }  // already streaming/done
+  explainText[gameId] = '';   // mark started
   let text = '';
   const es = new EventSource('/explain/' + gameId);
   es.onmessage = e => {
-    if (e.data === '[DONE]') { es.close(); if (text) explainCache[gameId] = text; return; }
+    if (e.data === '[DONE]') { es.close(); return; }
     try {
       const c = JSON.parse(e.data);
-      if (c.error) { box.textContent = c.error; es.close(); }
-      else if (c.text) { if (!text) box.textContent = ''; text += c.text; if (document.getElementById('explain-' + gameId)) box.textContent = text; }
+      if (c.error) { explainText[gameId] = c.error; setExplain(gameId); es.close(); }
+      else if (c.text) { text += c.text; explainText[gameId] = text; setExplain(gameId); }
     } catch (_) {}
   };
-  es.onerror = () => { es.close(); if (!text) box.textContent = 'Could not reach the AI — make sure Ollama is running.'; };
+  es.onerror = () => { es.close(); if (!text) { explainText[gameId] = 'Could not reach the AI — make sure Ollama is running.'; setExplain(gameId); } };
 }
 
 /* ---------- chat (fetch stream /chat) ---------- */
