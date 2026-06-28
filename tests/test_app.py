@@ -511,7 +511,9 @@ def test_chat_context_includes_games_and_model(mocker):
         'winner_accuracy': 60.0, 'total_games': 100, 'avg_score_err': 2.1})
     ctx = app._build_chat_context(focus_game_id=7)
     assert 'NYY @ BOS' in ctx and 'model win%' in ctx
-    assert 'edge' in ctx and 'BOS +6%' in ctx
+    # computed verdict pins the value side to its EXACT market price (so the LLM
+    # can't invent odds or reverse the edge)
+    assert 'COMPUTED VERDICT' in ctx and 'BOS at -150' in ctx and '+6%' in ctx
     assert 'HISTORICAL ACCURACY' in ctx and 'MODEL:' in ctx
     assert 'FOCUS GAME' in ctx and 'Boston Red Sox' in ctx
 
