@@ -27,13 +27,64 @@ PREDICTION_FIELDS = (
     'venue_id', 'venue_name', 'home_win_pct', 'away_win_pct',
     'median_home_score', 'median_away_score', 'modal_home_score', 'modal_away_score',
     'predicted_score', 'score_distribution',
-    'home_innings_scoring_pct', 'away_innings_scoring_pct',
-    'home_innings', 'away_innings', 'n_simulations',
+    'home_innings_dist', 'away_innings_dist', 'combined_innings_dist',
+    'n_simulations',
 )
 
 
 def _pred_dir(data_dir) -> Path:
     return Path(data_dir) / 'predictions'
+
+
+# ---- market-line snapshot store --------------------------------------------
+# The de-vigged market total line a prediction's Total pick is graded against.
+# Version-independent (the book line is the same regardless of model version) and
+# write-once: the first line captured for a game is preserved (a closing-ish
+# line), later captures only add games not yet seen. Absent line -> Total is N/A.
+
+_market_lines_lock = threading.Lock()
+
+
+def _market_dir(data_dir) -> Path:
+    return Path(data_dir) / 'market_lines'
+
+
+def load_market_lines(data_dir, date: str) -> dict:
+    """Return {game_id(str): {total_line, captured_at}} for date, or {} if none."""
+    f = _market_dir(data_dir) / f'{date}.json'
+    if not f.exists():
+        return {}
+    try:
+        return json.loads(f.read_text())
+    except Exception:
+        return {}
+
+
+def save_market_lines(data_dir, date: str, lines: dict) -> None:
+    """Merge total lines for date, write-once per game.
+
+    ``lines`` maps game_id -> total line (float). Games with a None/absent line
+    are skipped. Games already on disk keep their first-captured line and
+    timestamp; only new games are added.
+    """
+    import datetime
+    with _market_lines_lock:
+        existing = load_market_lines(data_dir, date)
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        changed = False
+        for gid, line in lines.items():
+            key = str(gid)
+            if line is None or key in existing:
+                continue
+            existing[key] = {'total_line': float(line), 'captured_at': now}
+            changed = True
+        if not changed and (_market_dir(data_dir) / f'{date}.json').exists():
+            return
+        d = _market_dir(data_dir)
+        d.mkdir(parents=True, exist_ok=True)
+        tmp = d / f'{date}.json.tmp'
+        tmp.write_text(json.dumps(existing, default=str))
+        tmp.replace(d / f'{date}.json')
 
 
 def model_version(data_dir):

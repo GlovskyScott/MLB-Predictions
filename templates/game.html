@@ -57,8 +57,20 @@
         .pitcher-label { font-size: 11px; color: #666; margin-top: 2px; }
 
         footer { text-align: center; padding: 24px; color: #333; font-size: 11px; }
+        .inn-bar { width: 20px; height: 48px; margin: 0 auto; display: flex; flex-direction: column-reverse; border-radius: 3px; overflow: hidden; background: #222; }
+        .inn-bar span { display: block; width: 100%; }
+        .seg0 { background: #2c2c2c; }
+        .seg1 { background: #4a90d9; }
+        .seg2 { background: #e8a33d; }
+        .inn-pct { font-size: 10px; color: #888; margin-top: 4px; }
+        .inn-legend { font-size: 11px; color: #888; margin-top: 14px; display: flex; gap: 16px; justify-content: center; }
+        .inn-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
     </style>
 </head>
+{% macro inn_bar(cell) -%}
+<div class="inn-bar" title="0 runs: {{ cell[0] }}% · 1 run: {{ cell[1] }}% · 2+ runs: {{ cell[2] }}%"><span class="seg0" style="height:{{ cell[0] }}%"></span><span class="seg1" style="height:{{ cell[1] }}%"></span><span class="seg2" style="height:{{ cell[2] }}%"></span></div>
+<div class="inn-pct">{{ (cell[1] + cell[2]) | round | int }}%</div>
+{%- endmacro %}
 <body>
 
 <div class="matchup-banner">
@@ -100,28 +112,41 @@
     </div>
 
     <div class="section">
-        <h2>Inning-by-Inning Breakdown (Avg. over {{ game.n_simulations }} Simulations)</h2>
+        <h2>Inning-by-Inning Run Distribution</h2>
+        {% if game.away_innings_dist and game.home_innings_dist %}
         <table>
             <thead>
                 <tr>
                     <th>Team</th>
                     {% for i in range(1, 10) %}<th>{{ i }}</th>{% endfor %}
-                    <th>Total</th>
                 </tr>
             </thead>
             <tbody>
                 <tr class="away-row">
                     <td>{{ game.away_name }}</td>
-                    {% for v in game.away_innings %}<td>{{ "%.1f"|format(v) }}</td>{% endfor %}
-                    <td><strong>{{ game.median_away_score|round|int }}</strong></td>
+                    {% for cell in game.away_innings_dist %}<td>{{ inn_bar(cell) }}</td>{% endfor %}
                 </tr>
                 <tr class="home-row">
                     <td>{{ game.home_name }}</td>
-                    {% for v in game.home_innings %}<td>{{ "%.1f"|format(v) }}</td>{% endfor %}
-                    <td><strong>{{ game.median_home_score|round|int }}</strong></td>
+                    {% for cell in game.home_innings_dist %}<td>{{ inn_bar(cell) }}</td>{% endfor %}
                 </tr>
+                {% if game.combined_innings_dist %}
+                <tr>
+                    <td style="color:#aaa;font-weight:700" title="Probability any team scores, by combined runs in the inning">Both</td>
+                    {% for cell in game.combined_innings_dist %}<td>{{ inn_bar(cell) }}</td>{% endfor %}
+                </tr>
+                {% endif %}
             </tbody>
         </table>
+        <div class="inn-legend">
+            <span><i class="seg0"></i>0 runs</span>
+            <span><i class="seg1"></i>1 run</span>
+            <span><i class="seg2"></i>2+ runs</span>
+            <span style="color:#666">· % below each bar = P(team scores). "Both" = P(any team scores).</span>
+        </div>
+        {% else %}
+        <p style="color:#666;font-size:12px">No inning distribution available for this prediction.</p>
+        {% endif %}
     </div>
 
     <div class="section">

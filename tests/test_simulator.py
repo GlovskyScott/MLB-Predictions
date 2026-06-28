@@ -15,7 +15,7 @@ def test_simulate_game_returns_expected_keys():
     required = {
         'home_win_pct', 'away_win_pct',
         'median_home_score', 'median_away_score',
-        'home_innings', 'away_innings',
+        'home_innings_dist', 'away_innings_dist', 'combined_innings_dist',
         'score_distribution', 'predicted_score',
     }
     assert required.issubset(result.keys())
@@ -26,13 +26,17 @@ def test_simulate_game_win_pcts_sum_to_one():
 
 def test_simulate_game_innings_has_nine_entries():
     result = simulate_game(make_prediction(), n_simulations=100, seed=42)
-    assert len(result['home_innings']) == 9
-    assert len(result['away_innings']) == 9
+    assert len(result['home_innings_dist']) == 9
+    assert len(result['away_innings_dist']) == 9
+    assert len(result['combined_innings_dist']) == 9
 
-def test_simulate_game_innings_are_non_negative():
-    result = simulate_game(make_prediction(), n_simulations=100, seed=42)
-    assert all(v >= 0 for v in result['home_innings'])
-    assert all(v >= 0 for v in result['away_innings'])
+def test_simulate_game_innings_dist_buckets_sum_to_100():
+    result = simulate_game(make_prediction(), n_simulations=200, seed=42)
+    for grid in (result['home_innings_dist'], result['away_innings_dist'],
+                 result['combined_innings_dist']):
+        for cell in grid:
+            assert len(cell) == 3                    # P0 / P1 / P2+
+            assert abs(sum(cell) - 100.0) < 0.5
 
 def test_simulate_game_scores_are_positive():
     result = simulate_game(make_prediction(), n_simulations=200, seed=42)

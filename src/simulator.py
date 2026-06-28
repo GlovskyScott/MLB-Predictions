@@ -80,11 +80,20 @@ def simulate_game(prediction: dict, n_simulations: int = 1000, seed: int = None,
         home_innings_matrix[i] = home_by_inning
         away_innings_matrix[i] = away_by_inning
 
-    # Mean per inning so values sum to predicted total; medians of Poisson(λ<0.5) are always 0
-    home_innings_mean = [round(float(np.mean(home_innings_matrix[:, j])), 2) for j in range(9)]
-    away_innings_mean = [round(float(np.mean(away_innings_matrix[:, j])), 2) for j in range(9)]
-    home_innings_scoring_pct = [round(float(np.mean(home_innings_matrix[:, j] >= 1)) * 100, 1) for j in range(9)]
-    away_innings_scoring_pct = [round(float(np.mean(away_innings_matrix[:, j] >= 1)) * 100, 1) for j in range(9)]
+    # Per-inning run-bucket distribution [P0, P1, P2+] (percent) for each team,
+    # plus the combined per-inning total-runs distribution from the true joint.
+    # The inning model overrides home/away/combined at serve time; this is the
+    # fallback used when no inning model is available.
+    def _bucket_dist(col):
+        return [round(float(np.mean(col == 0)) * 100, 1),
+                round(float(np.mean(col == 1)) * 100, 1),
+                round(float(np.mean(col >= 2)) * 100, 1)]
+
+    home_innings_dist = [_bucket_dist(home_innings_matrix[:, j]) for j in range(9)]
+    away_innings_dist = [_bucket_dist(away_innings_matrix[:, j]) for j in range(9)]
+    combined_innings_dist = [
+        _bucket_dist(home_innings_matrix[:, j] + away_innings_matrix[:, j]) for j in range(9)
+    ]
 
     median_home = float(np.median(home_scores_all))
     median_away = float(np.median(away_scores_all))
@@ -106,10 +115,9 @@ def simulate_game(prediction: dict, n_simulations: int = 1000, seed: int = None,
         'median_away_score': round(median_away, 1),
         'modal_home_score': modal_home,
         'modal_away_score': modal_away,
-        'home_innings': home_innings_mean,
-        'away_innings': away_innings_mean,
-        'home_innings_scoring_pct': home_innings_scoring_pct,
-        'away_innings_scoring_pct': away_innings_scoring_pct,
+        'home_innings_dist': home_innings_dist,
+        'away_innings_dist': away_innings_dist,
+        'combined_innings_dist': combined_innings_dist,
         'score_distribution': {
             'home': home_hist,
             'away': away_hist,

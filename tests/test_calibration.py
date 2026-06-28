@@ -113,3 +113,33 @@ def _synthetic():
     raw = rng.uniform(0.05, 0.95, 4000)
     true = 0.5 + (raw - 0.5) * 0.5
     return raw, (rng.uniform(size=raw.size) < true).astype(int)
+
+
+# ---- 3-class inning run-bucket calibrator -----------------------------------
+
+def test_calibrate_dist_identity_when_none():
+    # No calibrator -> identity (just rounded), and the buckets still sum to 100.
+    out = cal.calibrate_dist(None, [70.0, 22.0, 8.0])
+    assert out == [70.0, 22.0, 8.0]
+
+
+def test_calibrate_dist_renormalizes_to_100():
+    mc = cal.MulticlassInningCalibrator([
+        cal.PlattCalibrator(a=0.5), cal.PlattCalibrator(a=0.5), cal.PlattCalibrator(a=0.5),
+    ])
+    out = cal.calibrate_dist(mc, [70.0, 22.0, 8.0])
+    assert len(out) == 3
+    assert abs(sum(out) - 100.0) < 0.2
+
+
+def test_multiclass_calibrator_save_load_round_trip(tmp_path):
+    mc = cal.MulticlassInningCalibrator([
+        cal.PlattCalibrator(a=0.8), cal.PlattCalibrator(a=0.9), cal.PlattCalibrator(a=1.1),
+    ])
+    cal.save_multiclass(mc, tmp_path)
+    loaded = cal.load_multiclass(tmp_path)
+    assert [round(c.a, 3) for c in loaded.maps] == [0.8, 0.9, 1.1]
+
+
+def test_load_multiclass_missing_returns_none(tmp_path):
+    assert cal.load_multiclass(tmp_path) is None
