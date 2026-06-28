@@ -54,6 +54,14 @@ Training data: ~5,900 completed games from 2024–2026, with real historical wea
 
 A separate XGBoost classifier predicts P(team scores ≥ 1 run) for each of the 9 innings independently, trained on 100k+ inning observations. **Features:** inning number, is_home, batting wOBA, batting OPS, batting runs/game (L15), pitcher ERA, pitcher WHIP, starter days rest, bullpen stress L3, park runs factor, elevation_ft.
 
+### How accurate is it, really?
+
+The dashboard's 90-day accuracy is **in-sample** (the models train on the same completed games they're then graded on), so it overstates real skill. `scripts/backtest.py` runs proper temporal validation: in-sample ~74%, but **true out-of-sample ~58–60%** (vs a 53% home-team baseline) — genuinely good for MLB, just not 74%. See **[docs/MODELING.md](docs/MODELING.md)** for the full ladder, the negative-binomial run model, real FIP/xFIP, and the roadmap.
+
+```bash
+python scripts/backtest.py
+```
+
 ---
 
 ## Project structure

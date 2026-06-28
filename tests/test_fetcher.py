@@ -252,3 +252,20 @@ def test_get_market_odds_averages_books(mocker):
     assert out[k]['total'] == 8.5           # (8 + 9)/2
     assert out[k]['ml_away'] == -130.0      # (-120 + -140)/2
     assert out[k]['n_books'] == 2
+
+
+def test_get_pitching_stats_computes_real_fip(mocker, tmp_path):
+    # FIP must be the component-based metric, not a copy of ERA.
+    mocker.patch('src.fetcher._DATA_DIR', tmp_path)
+    mock_df = pd.DataFrame({
+        'Name': ['Ace', 'Wild'], 'Tm': ['NYY', 'BOS'], 'Lev': ['Maj-AL', 'Maj-AL'],
+        'ERA': [3.00, 3.00], 'WHIP': [1.0, 1.4], 'SO9': [11.0, 6.0],
+        'BB': [20.0, 60.0], 'HR': [10.0, 25.0], 'IP': [120.0, 120.0], 'GS': [20, 20], 'G': [20, 20],
+    })
+    mocker.patch('pybaseball.pitching_stats_bref', return_value=mock_df)
+    mocker.patch('pybaseball.cache.enable')
+    out = get_pitching_stats(2026, force_refresh=True).set_index('Name')
+    # Same ERA, but the high-K/low-BB/low-HR pitcher must have a much better FIP.
+    assert out.loc['Ace', 'ERA'] == out.loc['Wild', 'ERA']
+    assert out.loc['Ace', 'FIP'] < out.loc['Wild', 'FIP'] - 1.0
+    assert out.loc['Ace', 'FIP'] != out.loc['Ace', 'ERA']   # not just a copy
