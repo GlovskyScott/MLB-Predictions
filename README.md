@@ -183,7 +183,7 @@ Note: in-process state (today's predictions, rollup caches, model objects) is **
 
 Each game card shows:
 - **Win-probability bar** (home vs away, from the simulation)
-- **Betting board** — the model's implied **moneyline** (fair, no-vig; from the calibrated win probability), compared against the **average live sportsbook line** pulled from ESPN's public API (no key). A green badge flags where the model disagrees with the market (e.g. *model likes HOU*). (The run-line and total markets were removed — their edges came from the raw, uncalibrated run distribution and produced implausibly large numbers.)
+- **Betting board** — the headline **"Consensus" moneyline**, a walk-forward-learned blend of the model's win probability and the de-vigged live ESPN line (`sigmoid(a·logit(model) + b·logit(market) + c)`), shown next to the **average live sportsbook line** from ESPN's public API (no key). Because the market is sharp, the blend mostly tracks it — by design, that collapses the fake "edges" the raw model produced. The accuracy panels report both **Consensus** (the graded headline) and **Model** (model-only, for comparison). (The run-line and total markets were removed — their edges came from the raw, uncalibrated run distribution and produced implausibly large numbers.)
 - **Predicted score** (median final score across simulations)
 - **Game start time** (local, converted from UTC in the browser)
 - **Starting pitchers** with handedness
