@@ -520,3 +520,35 @@ def test_blend_core_identity_without_blender(tmp_path, mocker):
     core = {'home_win_pct': 64.0, 'away_win_pct': 36.0, 'raw_home_win_pct': 64.0}
     out = app._blend_core(core, market_home_prob=0.50)
     assert out['home_win_pct'] == 64.0
+
+
+def test_compare_date_grades_blended_pick(tmp_path, mocker):
+    import src.app as app
+    from src import predictions as P, blend
+    mocker.patch.object(app, '_DATA_DIR', tmp_path)
+    mocker.patch.object(app, '_current_version', return_value='v1')
+    app._blender_cache.clear(); app._calibrator_cache.clear()
+    # Blender leans hard on the market (a=0, b=3): the market decides the pick.
+    blend.save(blend.MarketBlender(a=0.0, b=3.0, c=0.0), tmp_path)
+    # Model favors HOME (70%); market favors AWAY (home +200 / away -240).
+    P.save_prediction(tmp_path, 'v1', '2026-06-26', [{
+        'game_id': 1, 'game_date': '2026-06-26', 'home_id': 147, 'away_id': 111,
+        'home_win_pct': 70.0, 'away_win_pct': 30.0, 'raw_home_win_pct': 70.0,
+        'median_home_score': 4.0, 'median_away_score': 5.0}])
+    P.save_market_odds(tmp_path, '2026-06-26', {1: {'ml_home': 200, 'ml_away': -240}})
+    mocker.patch('src.app.get_season_schedule', return_value=[{
+        'game_id': 1, 'game_date': '2026-06-26', 'status': 'Final',
+        'home_score': 3, 'away_score': 6, 'home_id': 147, 'away_id': 111}])  # away won
+    mocker.patch('src.app.refresh_schedule_date', return_value=0)
+    sim = mocker.patch('src.app.simulate_game')
+    mocker.patch('src.app.get_team_meta', return_value={
+        'logo_url': '', 'primary': '#111', 'secondary': '#222', 'abbr': 'X'})
+
+    data = app.compare_date('2026-06-26')
+    g = data['games'][0]
+    assert g['winner_correct'] is True          # blended followed market -> AWAY -> correct
+    assert g['model_winner_correct'] is False    # model picked HOME -> wrong
+    assert data['consensus_accuracy'] == 100.0
+    assert data['model_accuracy'] == 0.0
+    sim.assert_not_called()
+    app._blender_cache.clear()
