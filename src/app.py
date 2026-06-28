@@ -694,12 +694,15 @@ def create_app(testing: bool = False) -> Flask:
         last_7 = _aggregate_days(7)
         last_30 = _aggregate_days(90)
         meta = _read_model_meta()
+        cur = _current_version()
+        model_name = next((e.get('name') for e in _pred.read_versions(_DATA_DIR)
+                           if e.get('version') == cur), None) or f"v{meta.get('feature_version', '?')}"
 
         return render_template('index.html',
                                results=_simulation_cache, sim_date=today,
                                yesterday=_results_cache, yesterday_date=yesterday,
                                last_7=last_7, last_30=last_30,
-                               model_version=meta.get('feature_version', '?'),
+                               model_name=model_name,
                                model_n_games=meta.get('n_games', '?'),
                                model_years=meta.get('training_years', []))
 
