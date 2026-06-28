@@ -23,6 +23,7 @@ from src.stadiums import get_stadium
 from src.teams import get_team_meta
 from src import predictions as _pred
 from src import calibration as _cal
+from src import grading as _grading
 from src.colors import hex_to_rgb_str as _hex_to_rgb_str, bar_color as _bar_color
 from src.explanations import (
     _explanation_cache, _load_disk_explanations, _build_explain_prompt,
@@ -354,8 +355,17 @@ def run_daily_simulation(sim_date: str = None) -> list[dict]:
 
     cores = {c['game_id']: c for c in get_prediction(sim_date)}
     market = get_market_odds(sim_date)
+    schedule = get_schedule(sim_date)
+
+    # Snapshot the market total line each Total pick is graded against. Write-once,
+    # so the first (closing-ish) line captured for a date's games is preserved.
+    try:
+        _pred.save_market_lines(_DATA_DIR, sim_date, _market_total_lines(schedule, market))
+    except Exception:
+        pass
+
     results = []
-    for game in get_schedule(sim_date):
+    for game in schedule:
         try:
             g = _enrich_game(game, cores.get(game['game_id'], {}))
             mk = market.get(market_key(g.get('away_name', ''), g.get('home_name', '')))
@@ -365,6 +375,16 @@ def run_daily_simulation(sim_date: str = None) -> list[dict]:
             results.append({**game, 'error': str(e)})
 
     return results
+
+
+def _market_total_lines(games: list, market: dict) -> dict:
+    """Map game_id -> market total line, for games with a priced market total."""
+    out = {}
+    for g in games:
+        mk = market.get(market_key(g.get('away_name', ''), g.get('home_name', '')))
+        if mk and mk.get('n_books', 0) > 0 and mk.get('total') is not None:
+            out[g['game_id']] = mk['total']
+    return out
 
 
 def _inning_scoring_lines(g: dict) -> str:
@@ -506,8 +526,10 @@ def compare_date(result_date: str, version: str = None) -> dict:
     cores = _pred.load_prediction(_DATA_DIR, version, result_date) or []
 
     actuals = _actuals_for_date(result_date)
+    market_lines = _pred.load_market_lines(_DATA_DIR, result_date)
     results = []
     correct = 0
+    spread_correct = spread_n = total_correct = total_n = 0
     for core in cores:
         game = actuals.get(core.get('game_id'))
         if not game:
@@ -521,6 +543,16 @@ def compare_date(result_date: str, version: str = None) -> dict:
         away_err = abs(core.get('median_away_score', 0) - actual_away)
         if actual_home_won == predicted_home_won:
             correct += 1
+        # Market-by-market grade: ML (== winner_correct), Spread (run-line +/-1.5),
+        # Total (vs the captured market line; N/A when no line was snapshotted).
+        total_line = market_lines.get(str(core.get('game_id')), {}).get('total_line')
+        marks = _grading.grade_markets(core, actual_home, actual_away, total_line)
+        if marks['spread'] is not None:
+            spread_n += 1
+            spread_correct += 1 if marks['spread'] else 0
+        if marks['total'] not in (None, 'push'):
+            total_n += 1
+            total_correct += 1 if marks['total'] else 0
         home_meta = get_team_meta(game['home_id'])
         away_meta = get_team_meta(game['away_id'])
         results.append({
@@ -533,6 +565,10 @@ def compare_date(result_date: str, version: str = None) -> dict:
             'home_score_err': round(home_err, 1),
             'away_score_err': round(away_err, 1),
             'winner_correct': actual_home_won == predicted_home_won,
+            'ml_correct': marks['ml'],
+            'spread_correct': marks['spread'],
+            'total_correct': marks['total'],
+            'total_line': total_line,
             'home_logo': home_meta['logo_url'],
             'away_logo': away_meta['logo_url'],
             'home_color': home_meta['primary'],
@@ -547,12 +583,19 @@ def compare_date(result_date: str, version: str = None) -> dict:
     avg_err = round(
         sum(r['home_score_err'] + r['away_score_err'] for r in scored) / (2 * len(scored)), 2
     ) if scored else None
+    spread_accuracy = round(spread_correct / spread_n * 100, 1) if spread_n else None
+    total_accuracy = round(total_correct / total_n * 100, 1) if total_n else None
 
     return {
         'result_date': result_date,
         'games': results,
         'n_completed': n,
         'winner_accuracy': accuracy,
+        'ml_accuracy': accuracy,
+        'spread_accuracy': spread_accuracy,
+        'spread_graded': spread_n,
+        'total_accuracy': total_accuracy,
+        'total_graded': total_n,
         'avg_score_err': avg_err,
     }
 
@@ -560,6 +603,18 @@ def compare_date(result_date: str, version: str = None) -> dict:
 def _get_results_for_date(date_str: str) -> dict:
     """Results for a past date by joining the frozen prediction with actuals."""
     return compare_date(date_str)
+
+
+def _weighted_market_accuracy(daily: list, acc_key: str, n_key: str):
+    """Pool a per-day market accuracy by its graded count -> (accuracy, total_n).
+
+    Returns (None, 0) when nothing was graded for the market across the window.
+    """
+    n = sum(r.get(n_key, 0) for r in daily)
+    if not n:
+        return None, 0
+    correct = sum(round((r.get(acc_key) or 0) / 100 * r.get(n_key, 0)) for r in daily)
+    return round(correct / n * 100, 1), n
 
 
 def _aggregate_days(n_days: int, version: str = None) -> dict:
@@ -608,11 +663,18 @@ def _aggregate_days(n_days: int, version: str = None) -> dict:
     avg_err = round(
         sum(r['avg_score_err'] for r in scored) / len(scored), 2
     ) if scored else None
+    spread_acc, spread_n = _weighted_market_accuracy(daily, 'spread_accuracy', 'spread_graded')
+    total_acc, total_n = _weighted_market_accuracy(daily, 'total_accuracy', 'total_graded')
 
     result = {
         'total_games': total_games,
         'days_with_games': len(daily),
         'winner_accuracy': accuracy,
+        'ml_accuracy': accuracy,
+        'spread_accuracy': spread_acc,
+        'spread_graded': spread_n,
+        'total_accuracy': total_acc,
+        'total_graded': total_n,
         'avg_score_err': avg_err,
         'daily': daily,
     }
@@ -650,10 +712,17 @@ def _version_summary(version: str) -> dict:
     accuracy = round(correct / total * 100, 1) if total else 0
     scored = [r for r in daily if r.get('avg_score_err') is not None]
     avg_err = round(sum(r['avg_score_err'] for r in scored) / len(scored), 2) if scored else None
+    spread_acc, spread_n = _weighted_market_accuracy(daily, 'spread_accuracy', 'spread_graded')
+    total_acc, total_n = _weighted_market_accuracy(daily, 'total_accuracy', 'total_graded')
     result = {
         'total_games': total,
         'days_with_games': len(daily),
         'winner_accuracy': accuracy,
+        'ml_accuracy': accuracy,
+        'spread_accuracy': spread_acc,
+        'spread_graded': spread_n,
+        'total_accuracy': total_acc,
+        'total_graded': total_n,
         'avg_score_err': avg_err,
         'daily': daily,
     }
@@ -768,6 +837,8 @@ def create_app(testing: bool = False) -> Flask:
                 'total_games': s['total_games'],
                 'days_with_games': s['days_with_games'],
                 'winner_accuracy': s['winner_accuracy'],
+                'spread_accuracy': s.get('spread_accuracy'),
+                'total_accuracy': s.get('total_accuracy'),
                 'avg_score_err': s['avg_score_err'],
                 'is_current': v['version'] == current,
             })

@@ -1,3 +1,11 @@
+{% macro market_stats(s) -%}
+{% set ml = s.get('ml_accuracy', s.get('winner_accuracy')) %}
+{% set sp = s.get('spread_accuracy') %}
+{% set to = s.get('total_accuracy') %}
+<div class="summary-stat"><div class="s-label" title="Moneyline: % of games the predicted winner was correct">ML</div><div class="s-value {% if ml is not none and ml >= 55 %}good{% else %}neutral{% endif %}">{% if ml is not none %}{{ ml }}%{% else %}—{% endif %}</div></div>
+<div class="summary-stat"><div class="s-label" title="Run line ±1.5: % of model picks that covered">Spread</div><div class="s-value {% if sp is not none and sp >= 52 %}good{% else %}neutral{% endif %}">{% if sp is not none %}{{ sp }}%{% else %}—{% endif %}</div></div>
+<div class="summary-stat"><div class="s-label" title="Total O/U vs market line: % of model picks correct (pushes excluded)">Total</div><div class="s-value {% if to is not none and to >= 52 %}good{% else %}neutral{% endif %}">{% if to is not none %}{{ to }}%{% else %}—{% endif %}</div></div>
+{%- endmacro %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -359,7 +367,7 @@
             <span class="panel-title">Yesterday &middot; {{ yesterday_date }}</span>
             {% if yesterday and yesterday.get('n_completed', 0) > 0 %}
             <div class="summary-stat"><div class="s-label">Games</div><div class="s-value neutral">{{ yesterday.n_completed }}</div></div>
-            <div class="summary-stat"><div class="s-label" title="% of games where predicted winner was correct">Accuracy</div><div class="s-value {% if yesterday.winner_accuracy >= 60 %}good{% else %}neutral{% endif %}">{{ yesterday.winner_accuracy }}%</div></div>
+            {{ market_stats(yesterday) }}
             {% if yesterday.avg_score_err is not none %}
             <div class="summary-stat"><div class="s-label" title="Average runs prediction error per team">Avg Err</div><div class="s-value {% if yesterday.avg_score_err <= 1.5 %}good{% else %}neutral{% endif %}">±{{ "%.1f"|format(yesterday.avg_score_err) }}</div></div>
             {% endif %}
@@ -402,7 +410,7 @@
             <span class="panel-title">Last 7 Days</span>
             {% if last_7 and last_7.total_games > 0 %}
             <div class="summary-stat"><div class="s-label">Games</div><div class="s-value neutral">{{ last_7.total_games }}</div></div>
-            <div class="summary-stat"><div class="s-label" title="% of games where predicted winner was correct">Accuracy</div><div class="s-value {% if last_7.winner_accuracy >= 60 %}good{% else %}neutral{% endif %}">{{ last_7.winner_accuracy }}%</div></div>
+            {{ market_stats(last_7) }}
             {% if last_7.avg_score_err is not none %}
             <div class="summary-stat"><div class="s-label" title="Average runs prediction error per team">Avg Err</div><div class="s-value {% if last_7.avg_score_err <= 1.5 %}good{% else %}neutral{% endif %}">±{{ "%.1f"|format(last_7.avg_score_err) }}</div></div>
             {% endif %}
@@ -437,7 +445,7 @@
             <span class="panel-title">Last 90 Days</span>
             {% if last_90 and last_90.total_games > 0 %}
             <div class="summary-stat"><div class="s-label">Games</div><div class="s-value neutral">{{ last_90.total_games }}</div></div>
-            <div class="summary-stat"><div class="s-label" title="% of games where predicted winner was correct">Accuracy</div><div class="s-value {% if last_90.winner_accuracy >= 60 %}good{% else %}neutral{% endif %}">{{ last_90.winner_accuracy }}%</div></div>
+            {{ market_stats(last_90) }}
             {% if last_90.avg_score_err is not none %}
             <div class="summary-stat"><div class="s-label" title="Average runs prediction error per team">Avg Err</div><div class="s-value {% if last_90.avg_score_err <= 1.5 %}good{% else %}neutral{% endif %}">±{{ "%.1f"|format(last_90.avg_score_err) }}</div></div>
             {% endif %}

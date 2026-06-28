@@ -224,6 +224,65 @@ def test_compare_date_joins_without_resim(tmp_path, mocker):
     sim.assert_not_called()
 
 
+def test_compare_date_grades_ml_total_spread(tmp_path, mocker):
+    import src.app as app
+    from src import predictions as P
+    mocker.patch.object(app, '_DATA_DIR', tmp_path)
+    mocker.patch.object(app, '_current_version', return_value='v1')
+    # Deterministic core: home always 5, away always 3 -> total 8, home covers -1.5.
+    dist = {'labels': [0, 1, 2, 3, 4, 5], 'home': [0, 0, 0, 0, 0, 1], 'away': [0, 0, 0, 1, 0, 0]}
+    P.save_prediction(tmp_path, 'v1', '2026-06-26', [{
+        'game_id': 1, 'game_date': '2026-06-26', 'home_id': 147, 'away_id': 111,
+        'home_name': 'NYY', 'away_name': 'BOS', 'home_win_pct': 70.0, 'away_win_pct': 30.0,
+        'median_home_score': 5.0, 'median_away_score': 3.0, 'predicted_score': '5-3',
+        'score_distribution': dist}])
+    P.save_market_lines(tmp_path, '2026-06-26', {1: 7.5})   # market total line
+    mocker.patch('src.app.get_season_schedule', return_value=[{
+        'game_id': 1, 'game_date': '2026-06-26', 'status': 'Final',
+        'home_score': 5, 'away_score': 3, 'home_id': 147, 'away_id': 111}])
+    mocker.patch('src.app.refresh_schedule_date', return_value=0)
+    sim = mocker.patch('src.app.simulate_game')
+    mocker.patch('src.app.get_team_meta', return_value={
+        'logo_url': '', 'primary': '#111', 'secondary': '#222', 'abbr': 'X'})
+
+    data = app.compare_date('2026-06-26')
+    g = data['games'][0]
+    assert g['ml_correct'] is True          # picked home (70%), home won
+    assert g['spread_correct'] is True      # home won by 2 -> covers -1.5
+    assert g['total_correct'] is True       # total 8 > 7.5, over picked
+    assert data['ml_accuracy'] == 100.0
+    assert data['spread_accuracy'] == 100.0
+    assert data['total_accuracy'] == 100.0
+    assert data['total_graded'] == 1
+    sim.assert_not_called()
+
+
+def test_compare_date_total_na_without_line(tmp_path, mocker):
+    import src.app as app
+    from src import predictions as P
+    mocker.patch.object(app, '_DATA_DIR', tmp_path)
+    mocker.patch.object(app, '_current_version', return_value='v1')
+    dist = {'labels': [0, 1, 2, 3, 4, 5], 'home': [0, 0, 0, 0, 0, 1], 'away': [0, 0, 0, 1, 0, 0]}
+    P.save_prediction(tmp_path, 'v1', '2026-06-26', [{
+        'game_id': 1, 'game_date': '2026-06-26', 'home_id': 147, 'away_id': 111,
+        'home_win_pct': 70.0, 'away_win_pct': 30.0, 'median_home_score': 5.0,
+        'median_away_score': 3.0, 'score_distribution': dist}])
+    # No market line saved for this date -> Total is N/A.
+    mocker.patch('src.app.get_season_schedule', return_value=[{
+        'game_id': 1, 'game_date': '2026-06-26', 'status': 'Final',
+        'home_score': 5, 'away_score': 3, 'home_id': 147, 'away_id': 111}])
+    mocker.patch('src.app.refresh_schedule_date', return_value=0)
+    mocker.patch('src.app.simulate_game')
+    mocker.patch('src.app.get_team_meta', return_value={
+        'logo_url': '', 'primary': '#111', 'secondary': '#222', 'abbr': 'X'})
+
+    data = app.compare_date('2026-06-26')
+    assert data['games'][0]['total_correct'] is None
+    assert data['total_graded'] == 0
+    assert data['total_accuracy'] is None   # nothing graded
+    assert data['spread_accuracy'] == 100.0  # spread still graded
+
+
 def test_compare_date_archived_version_no_generate(tmp_path, mocker):
     import src.app as app
     from src import predictions as P
@@ -385,6 +444,40 @@ def test_market_block_edges_and_default_odds():
     assert b['edge_ml_side'] == 'BOS' and b['edge_ml_pct'] == 13     # model 55% vs ~42%
     assert b['edge_total_side'] == 'Over' and b['edge_total_pct'] == 25  # model O 75% vs 50%
     assert b['edge_rl_side'] == 'NYY +1.5' and b['edge_rl_pct'] == 25   # fav covers 25% vs 50%
+
+
+def test_weighted_market_accuracy_pools_by_graded_count():
+    import src.app as app
+    daily = [
+        {'spread_accuracy': 50.0, 'spread_graded': 10},   # 5 correct
+        {'spread_accuracy': 100.0, 'spread_graded': 10},  # 10 correct
+        {'spread_accuracy': None, 'spread_graded': 0},    # ignored
+    ]
+    acc, n = app._weighted_market_accuracy(daily, 'spread_accuracy', 'spread_graded')
+    assert n == 20 and acc == 75.0   # 15/20
+
+
+def test_weighted_market_accuracy_none_when_nothing_graded():
+    import src.app as app
+    daily = [{'total_accuracy': None, 'total_graded': 0}]
+    acc, n = app._weighted_market_accuracy(daily, 'total_accuracy', 'total_graded')
+    assert acc is None and n == 0
+
+
+def test_market_total_lines_maps_priced_games_only():
+    import src.app as app
+    from src.fetcher import market_key
+    games = [
+        {'game_id': 1, 'away_name': 'Boston Red Sox', 'home_name': 'New York Yankees'},
+        {'game_id': 2, 'away_name': 'Chicago Cubs', 'home_name': 'St. Louis Cardinals'},
+        {'game_id': 3, 'away_name': 'No Odds', 'home_name': 'Team'},
+    ]
+    market = {
+        market_key('Boston Red Sox', 'New York Yankees'): {'total': 8.5, 'n_books': 3},
+        market_key('Chicago Cubs', 'St. Louis Cardinals'): {'total': None, 'n_books': 2},
+    }
+    out = app._market_total_lines(games, market)
+    assert out == {1: 8.5}   # game 2 has no total; game 3 has no market
 
 
 def test_chat_context_includes_games_and_model(mocker):
