@@ -265,3 +265,29 @@ def test_retrain_forks_version_and_keeps_archive(client, tmp_path, mocker):
     assert new_v in versions                                   # new version registered
     assert (tmp_path / 'predictions' / 'vOLD' / '2026-06-26.json').exists()  # archive intact
     backfill.assert_called_once()                              # re-sim kicked off
+
+
+def test_archive_pages_render(client, tmp_path, mocker):
+    import src.app as app
+    from src import predictions as P
+    mocker.patch.object(app, '_DATA_DIR', tmp_path)
+    mocker.patch.object(app, '_current_version', return_value='vCUR')
+    P.append_version(tmp_path, {'version': 'vCUR', 'created_at': '2026-06-27T00:00:00+00:00',
+                                'feature_version': 4, 'n_games': 5921})
+    P.save_prediction(tmp_path, 'vCUR', '2026-06-26', [{
+        'game_id': 1, 'game_date': '2026-06-26', 'home_id': 147, 'away_id': 111,
+        'home_name': 'NYY', 'away_name': 'BOS', 'home_win_pct': 60.0,
+        'median_home_score': 5.0, 'median_away_score': 3.0, 'predicted_score': '5-3'}])
+    mocker.patch('src.app.get_season_schedule', return_value=[{
+        'game_id': 1, 'game_date': '2026-06-26', 'status': 'Final',
+        'home_score': 6, 'away_score': 2, 'home_id': 147, 'away_id': 111}])
+    mocker.patch('src.app.refresh_schedule_date', return_value=0)
+    mocker.patch('src.app.get_team_meta', return_value={
+        'logo_url': '', 'primary': '#111', 'secondary': '#222', 'abbr': 'X'})
+
+    r1 = client.get('/archive')
+    assert r1.status_code == 200
+    assert b'vCUR' in r1.data
+    r2 = client.get('/archive/vCUR')
+    assert r2.status_code == 200
+    assert b'2026-06-26' in r2.data

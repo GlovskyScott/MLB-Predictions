@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Model Archive — MLB Simulator</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a0a; color: #e8e8e8; }
+        header { display: flex; align-items: center; justify-content: space-between; padding: 14px 22px; border-bottom: 1px solid #1a1a1a; }
+        a { color: #4a9eff; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .wrap { padding: 22px; max-width: 1100px; margin: 0 auto; }
+        h2 { font-size: 15px; margin-bottom: 14px; color: #ccc; }
+        table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        thead th { background: #1a1a1a; padding: 8px 12px; color: #777; text-align: left; white-space: nowrap; border-bottom: 1px solid #222; }
+        tbody td { padding: 9px 12px; border-top: 1px solid #1a1a1a; vertical-align: middle; }
+        tbody tr:hover { background: #111; }
+        .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+        .tag { font-size: 10px; padding: 2px 6px; border-radius: 4px; background: #1a6fd4; color: #fff; margin-left: 6px; }
+        .acc { font-weight: 700; color: #5dd47e; }
+        .muted { color: #777; }
+    </style>
+</head>
+<body>
+<header>
+    <div style="font-size:17px;font-weight:700;">Model Archive</div>
+    <a href="/">← Back to dashboard</a>
+</header>
+<div class="wrap">
+    <h2>Prediction accuracy by model version</h2>
+    {% if not versions %}
+        <p class="muted">No model versions recorded yet.</p>
+    {% else %}
+    <table>
+        <thead>
+            <tr>
+                <th>Version</th><th>Trained</th><th>Features</th><th>Train games</th>
+                <th>Days</th><th>Graded games</th><th>Accuracy</th><th>Avg err</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for v in versions %}
+            <tr>
+                <td class="mono">
+                    <a href="/archive/{{ v.version }}">{{ v.version }}</a>
+                    {% if v.is_current %}<span class="tag">current</span>{% endif %}
+                </td>
+                <td class="muted">{{ (v.created_at or '')[:10] }}</td>
+                <td>v{{ v.feature_version if v.feature_version is not none else '?' }}</td>
+                <td>{{ v.n_games if v.n_games is not none else '—' }}</td>
+                <td>{{ v.days_with_games }}</td>
+                <td>{{ v.total_games }}</td>
+                <td class="acc">{% if v.total_games %}{{ v.winner_accuracy }}%{% else %}—{% endif %}</td>
+                <td>{% if v.avg_score_err is not none %}±{{ v.avg_score_err }}{% else %}—{% endif %}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+</div>
+</body>
+</html>

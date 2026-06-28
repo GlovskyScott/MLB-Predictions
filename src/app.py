@@ -452,6 +452,32 @@ def _aggregate_days(n_days: int, version: str = None) -> dict:
     }
 
 
+def _version_summary(version: str) -> dict:
+    """Aggregate accuracy across every date stored for a model version (all of
+    its history, not just the last 90 days). Used by the archive pages."""
+    daily = []
+    for d in _pred.list_dates(_DATA_DIR, version):
+        try:
+            r = compare_date(d, version)
+            if r.get('n_completed', 0) > 0:
+                daily.append(r)
+        except Exception:
+            pass
+    daily.sort(key=lambda x: x['result_date'], reverse=True)
+    total = sum(r['n_completed'] for r in daily)
+    correct = sum(round(r['winner_accuracy'] / 100 * r['n_completed']) for r in daily)
+    accuracy = round(correct / total * 100, 1) if total else 0
+    scored = [r for r in daily if r.get('avg_score_err') is not None]
+    avg_err = round(sum(r['avg_score_err'] for r in scored) / len(scored), 2) if scored else None
+    return {
+        'total_games': total,
+        'days_with_games': len(daily),
+        'winner_accuracy': accuracy,
+        'avg_score_err': avg_err,
+        'daily': daily,
+    }
+
+
 def _backfill_one(d: str) -> None:
     """Ensure a stored prediction exists for date d under the current version."""
     try:
@@ -681,6 +707,31 @@ def create_app(testing: bool = False) -> Flask:
         _results_cache = {}
         threading.Thread(target=_backfill_results_cache, args=(90,), daemon=True).start()
         return redirect(url_for('index'))
+
+    @app.route('/archive')
+    def archive():
+        current = _current_version()
+        rows = []
+        for v in _pred.read_versions(_DATA_DIR):
+            s = _version_summary(v['version'])
+            rows.append({
+                **v,
+                'total_games': s['total_games'],
+                'days_with_games': s['days_with_games'],
+                'winner_accuracy': s['winner_accuracy'],
+                'avg_score_err': s['avg_score_err'],
+                'is_current': v['version'] == current,
+            })
+        rows.reverse()  # newest first
+        return render_template('archive.html', versions=rows)
+
+    @app.route('/archive/<version>')
+    def archive_version(version: str):
+        meta = next((v for v in _pred.read_versions(_DATA_DIR)
+                     if v['version'] == version), {'version': version})
+        summary = _version_summary(version)
+        return render_template('archive_version.html', version=version, meta=meta,
+                               summary=summary, is_current=(version == _current_version()))
 
     @app.route('/explain/<int:game_id>')
     def explain(game_id: int):
