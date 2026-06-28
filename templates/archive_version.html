@@ -30,7 +30,6 @@
     <div style="font-size:17px;font-weight:700;">
         Model {{ meta.name or version }}
         <span class="mono muted" style="font-size:11px">{{ version }}</span>
-        {% if meta.release %}<span class="tag" style="background:#333">{{ meta.release }}</span>{% endif %}
         {% if is_current %}<span class="tag">current</span>{% endif %}
     </div>
     <a href="/archive">← All versions</a>
