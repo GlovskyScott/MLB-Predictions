@@ -176,6 +176,7 @@ def test_get_prediction_generates_and_persists_on_miss(tmp_path, mocker):
 def test_run_daily_simulation_enriches_stored_core(mocker):
     import src.app as app
     mocker.patch('src.app.get_market_odds', return_value={})  # no live ESPN call
+    mocker.patch('src.app._get_calibrator', return_value=None)  # identity: test enrichment only
     mocker.patch('src.app.get_prediction', return_value=[{
         'game_id': 7, 'game_date': '2026-06-26', 'home_id': 147, 'away_id': 111,
         'home_name': 'NYY', 'away_name': 'BOS', 'home_win_pct': 60.0, 'away_win_pct': 40.0,

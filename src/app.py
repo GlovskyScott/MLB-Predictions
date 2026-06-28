@@ -22,6 +22,7 @@ from src.simulator import simulate_game
 from src.stadiums import get_stadium
 from src.teams import get_team_meta
 from src import predictions as _pred
+from src import calibration as _cal
 from src.colors import hex_to_rgb_str as _hex_to_rgb_str, bar_color as _bar_color
 from src.explanations import (
     _explanation_cache, _load_disk_explanations, _build_explain_prompt,
@@ -44,6 +45,36 @@ _last_simulated_date: str = ""
 _results_cache: dict = {}
 _last_results_date: str = ""
 _actuals_cache: dict = {}  # settled date -> {game_id: final game}; avoids redundant live refreshes
+_calibrator_cache: dict = {}  # data-dir -> PlattCalibrator|None; win% calibration loaded lazily
+
+
+def _get_calibrator():
+    """Load (and cache) the win-probability calibrator for the active data dir.
+
+    Keyed on _DATA_DIR so tests that patch it to a tmp_path (with no calibrator,
+    -> None -> identity) stay isolated from the real one.
+    """
+    key = str(_DATA_DIR)
+    if key not in _calibrator_cache:
+        _calibrator_cache[key] = _cal.load(_DATA_DIR)
+    return _calibrator_cache[key]
+
+
+def _calibrate_core(core: dict) -> dict:
+    """Return a copy of a prediction core with its win% calibrated for display.
+
+    The raw simulated win% is overconfident out-of-sample; the calibrator pulls
+    it back toward the true rate (see src/calibration.py). Monotonic through 50%,
+    so the favored side — and therefore the graded pick — never changes. The
+    stored core on disk is untouched; this only affects what is shown and the
+    edge math. No-op when no calibrator is present (identity)."""
+    cal = _get_calibrator()
+    hwp = core.get('home_win_pct')
+    if cal is None or hwp is None:
+        return core
+    hp = _cal.calibrate_pct(cal, hwp)
+    return {**core, 'home_win_pct': hp, 'away_win_pct': round(100.0 - hp, 1),
+            'raw_home_win_pct': hwp}
 
 
 def _current_version() -> str | None:
@@ -195,6 +226,7 @@ def _enrich_game(game: dict, core: dict) -> dict:
     """Combine a schedule game shell with its frozen prediction core and the
     presentation/context fields (weather, lineup, features, logos, colors) that
     are re-derived at render time rather than persisted in the artifact."""
+    core = _calibrate_core(core)
     features = build_game_features(game, year=2026)
     stadium = get_stadium(game['home_id']) or {}
     is_dome = stadium.get('roof') == 'dome'
@@ -446,6 +478,7 @@ def compare_date(result_date: str, version: str = None) -> dict:
         game = actuals.get(core.get('game_id'))
         if not game:
             continue  # not final yet — no comparison row
+        core = _calibrate_core(core)  # display win% calibrated; pick (>50) unchanged
         actual_home = int(game['home_score'])
         actual_away = int(game['away_score'])
         actual_home_won = actual_home > actual_away

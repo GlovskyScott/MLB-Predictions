@@ -62,6 +62,10 @@ The dashboard's 90-day accuracy is **in-sample** (the models train on the same c
 python scripts/backtest.py
 ```
 
+### Calibrated win probabilities
+
+The same overconfidence shows up in the *probabilities*: walk-forward, a simulated "72%" actually wins ~61%. Left uncorrected, comparing those inflated numbers to an efficient sportsbook line manufactures fake "edges" of 7–14% — which is what a real edge never looks like. So the displayed win% is run through a **temperature-scaling calibrator** (`src/calibration.py`, fit on out-of-sample predictions) before it's shown or used for the moneyline edge. It only rescales confidence — it passes exactly through 50%, so the winner pick and every graded accuracy number are unchanged; the fake moneyline edges collapse to a realistic 0–3%. Rebuild it after a retrain with `python -m scripts.build_calibrator`.
+
 ---
 
 ## Project structure
@@ -78,6 +82,7 @@ MLB-Predictions/
 │   ├── fetcher.py      # All external data + caches: MLB Stats API, pybaseball, Open-Meteo, bootstrap_*()
 │   ├── model.py        # Train / load / predict for the XGBoost models
 │   ├── simulator.py    # Poisson Monte Carlo game simulation (simulate_game)
+│   ├── calibration.py  # Serve-time win% calibration (temperature scaling, fit out-of-sample)
 │   ├── stadiums.py     # Stadium lat/lon, elevation, park factors, roof type, wind classification
 │   └── teams.py        # Team colors, logos, abbreviations
 ├── templates/
@@ -190,7 +195,7 @@ Each game card shows:
 
 Below the cards: yesterday's graded results, plus 7-day and 90-day accuracy rollups. The footer shows the current model name (e.g. `Model v4.1`).
 
-**💬 Dashboard Assistant** — a chat widget (bottom-right) backed by the local Ollama model. It's given the day's predictions, betting lines + edges, recent accuracy, and model facts as context, so you can ask things like *"which game has the biggest moneyline edge?"*, *"how did the model do yesterday?"*, or *"how are win probabilities computed?"*. Each game card has a **💬 Discuss** button that hands that game (and its AI analysis) to the chat for follow-up questions.
+**Dashboard Assistant** — a chat widget (bottom-right) backed by the local Ollama model. It's given the day's predictions, betting lines + edges, recent accuracy, and model facts as context, so you can ask things like *"which game has the biggest moneyline edge?"*, *"how did the model do yesterday?"*, or *"how are win probabilities computed?"*. Each game card has a **Discuss** button that hands that game (and its AI analysis) to the chat for follow-up questions.
 
 ---
 
@@ -221,7 +226,7 @@ A retrain at the same feature set bumps the build (`v4.0 → v4.1`); changing th
 
 ### Archive (`/archive`)
 
-Click **▤ Archive** in the header. The list shows every model version with rollup winner-accuracy and average score error; click a version (`/archive/<version>`) to drill into its per-date predictions vs actuals. `data/predictions/versions.json` is the registry.
+Click **Archive** in the header. The list shows every model version with rollup winner-accuracy and average score error; click a version (`/archive/<version>`) to drill into its per-date predictions vs actuals. `data/predictions/versions.json` is the registry.
 
 ### Legacy models (pre-v4 releases)
 
@@ -245,7 +250,7 @@ python scripts/register_legacy_version.py \
 
 ## Retraining
 
-Click **⚙ Retrain** in the UI, or `POST /retrain`. This:
+Click **Retrain** in the UI, or `POST /retrain`. This:
 
 1. Rebuilds the 44-feature matrix for every completed 2024–2026 game (`for_training=True` skips slow per-game splits/lineups; ~50 s using the cached schedules/linescores).
 2. Trains the three game models + the inning classifier and writes new pkls to `data/`.

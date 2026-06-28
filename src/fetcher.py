@@ -15,6 +15,11 @@ _DATA_RELEASE_TAG = "data-cache"
 _DATA_RELEASE_ASSET = "data_cache.tar.gz"
 _MODEL_RELEASE_TAG = "latest"
 _MODEL_PKLS = ["model_win.pkl", "model_runs_home.pkl", "model_runs_away.pkl", "model_inning.pkl"]
+# Optional model artifact: the win% calibrator. NOT part of _MODEL_PKLS — it must
+# stay out of the version hash (predictions.model_version) since it's a serve-time
+# presentation transform, not a version-defining model. Restored best-effort; the
+# app falls back to the identity (uncalibrated) win% when it's absent.
+_CALIBRATOR_ASSET = "model_calibrator.pkl"
 _PREDICTIONS_RELEASE_TAG = "prediction-archive"
 _PREDICTIONS_RELEASE_ASSET = "predictions.tar.gz"
 
@@ -28,21 +33,35 @@ def bootstrap_model_cache(repo: str = "jackleh/MLB-Predictions") -> None:
     which executes code on load. Only ever point this at the project's own
     trusted releases — never a third-party `repo`.
     """
-    if all((_DATA_DIR / p).exists() for p in _MODEL_PKLS):
+    need_pkls = [p for p in _MODEL_PKLS if not (_DATA_DIR / p).exists()]
+    need_cal = not (_DATA_DIR / _CALIBRATOR_ASSET).exists()
+    if not need_pkls and not need_cal:
         return
     import subprocess
-    print("Model files not found — downloading from GitHub release...")
-    try:
-        for pkl in _MODEL_PKLS:
-            if not (_DATA_DIR / pkl).exists():
+    if need_pkls:
+        print("Model files not found — downloading from GitHub release...")
+        try:
+            for pkl in need_pkls:
                 subprocess.run(
                     ["gh", "release", "download", _MODEL_RELEASE_TAG,
                      "-R", repo, "-D", str(_DATA_DIR), "--pattern", pkl],
                     check=True, capture_output=True,
                 )
-        print("Model files restored.")
-    except Exception as e:
-        print(f"Could not download model files ({e}). Will retrain.")
+            print("Model files restored.")
+        except Exception as e:
+            print(f"Could not download model files ({e}). Will retrain.")
+    if need_cal:
+        # Optional — older releases may not have it; the app stays correct (just
+        # uncalibrated) without it, so a failure here is non-fatal.
+        try:
+            subprocess.run(
+                ["gh", "release", "download", _MODEL_RELEASE_TAG,
+                 "-R", repo, "-D", str(_DATA_DIR), "--pattern", _CALIBRATOR_ASSET],
+                check=True, capture_output=True,
+            )
+            print("Win-probability calibrator restored.")
+        except Exception:
+            pass
 
 
 def bootstrap_data_cache(repo: str = "jackleh/MLB-Predictions") -> None:
