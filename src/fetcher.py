@@ -19,7 +19,8 @@ _MODEL_PKLS = ["model_win.pkl", "model_runs_home.pkl", "model_runs_away.pkl", "m
 # stay out of the version hash (predictions.model_version) since it's a serve-time
 # presentation transform, not a version-defining model. Restored best-effort; the
 # app falls back to the identity (uncalibrated) win% when it's absent.
-_CALIBRATOR_ASSETS = ["model_calibrator.pkl", "model_inning_calibrator.pkl"]
+_CALIBRATOR_ASSETS = ["model_calibrator.pkl", "model_inning_calibrator.pkl",
+                      "model_inning_dist_calibrator.pkl"]
 _PREDICTIONS_RELEASE_TAG = "prediction-archive"
 _PREDICTIONS_RELEASE_ASSET = "predictions.tar.gz"
 
