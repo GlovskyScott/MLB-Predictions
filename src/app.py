@@ -10,6 +10,7 @@ from src.fetcher import (
     get_schedule, get_pitching_stats, get_team_batting_stats,
     get_bullpen_stats, get_season_schedule, get_weather_for_game, get_game_linescore,
     get_game_lineup, bootstrap_data_cache, bootstrap_model_cache,
+    refresh_schedule_date,
 )
 from src.features import build_game_features, build_inning_feature_row, _NEUTRAL_WEATHER, FEATURE_VERSION
 from src.model import (
@@ -266,10 +267,22 @@ def run_results_comparison(result_date: str, n_simulations: int = 500) -> dict:
     # Use disk-cached season schedule for past dates — avoids a live API call per day
     all_games = get_season_schedule(year)
     games = [g for g in all_games if g.get('game_date') == result_date]
-    if not games:
-        games = get_schedule(result_date)  # fallback for today/future
-    completed = [g for g in games if g.get('status') == 'Final'
-                 and g.get('home_score') is not None and g.get('away_score') is not None]
+
+    def _is_final(g):
+        return (g.get('status') == 'Final'
+                and g.get('home_score') is not None and not pd.isna(g.get('home_score'))
+                and g.get('away_score') is not None and not pd.isna(g.get('away_score')))
+
+    # The cached schedule may have been snapshotted before this date's games
+    # finished, leaving them without final scores. When any game for the date
+    # isn't final yet, refresh that date from the live API and reload from cache.
+    if not games or not all(_is_final(g) for g in games):
+        if refresh_schedule_date(year, result_date) > 0:
+            all_games = get_season_schedule(year)
+            games = [g for g in all_games if g.get('game_date') == result_date]
+        if not games:
+            games = get_schedule(result_date)  # fallback for today/future
+    completed = [g for g in games if _is_final(g)]
 
     results = []
     correct_winner = 0

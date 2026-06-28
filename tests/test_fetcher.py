@@ -5,8 +5,9 @@ from src.fetcher import (
     get_schedule, get_probable_pitchers, get_team_roster,
     get_pitching_stats, get_batting_stats, get_bullpen_stats,
     get_team_batting_stats, get_weather_forecast, get_weather_historical,
-    get_weather_for_game,
+    get_weather_for_game, refresh_schedule_date,
 )
+import src.fetcher as fetcher
 
 MOCK_SCHEDULE = [
     {
@@ -51,6 +52,43 @@ def test_get_schedule_handles_empty_date(mocker):
     mocker.patch('statsapi.schedule', return_value=[])
     result = get_schedule('2026-06-25')
     assert result == []
+
+def test_refresh_schedule_date_fills_final_scores(mocker, tmp_path):
+    # Cached schedule has the game as not-yet-final with no scores
+    cache = tmp_path / "schedule_2026.csv"
+    pd.DataFrame([{
+        'game_id': 745003, 'game_date': '2026-06-26',
+        'home_id': 147, 'away_id': 111,
+        'home_name': 'New York Yankees', 'away_name': 'Boston Red Sox',
+        'venue_id': 3313, 'venue_name': 'Yankee Stadium',
+        'status': 'Scheduled', 'home_score': None, 'away_score': None,
+        'home_probable_pitcher': '', 'away_probable_pitcher': '',
+    }]).to_csv(cache, index=False)
+    mocker.patch('src.fetcher._DATA_DIR', tmp_path)
+    fetcher._season_schedule_memory.pop(2026, None)
+    # Live API now reports the game as Final with scores
+    final_game = {**MOCK_SCHEDULE[0], 'game_id': 745003, 'game_date': '2026-06-26',
+                  'status': 'Final', 'home_score': 8, 'away_score': 0}
+    mocker.patch('statsapi.schedule', return_value=[final_game])
+
+    n = refresh_schedule_date(2026, '2026-06-26')
+
+    assert n == 1
+    df = pd.read_csv(cache)
+    row = df[df['game_id'] == 745003].iloc[0]
+    assert row['status'] == 'Final'
+    assert int(row['home_score']) == 8 and int(row['away_score']) == 0
+    assert 2026 not in fetcher._season_schedule_memory  # memory invalidated
+
+
+def test_refresh_schedule_date_noop_when_no_live_games(mocker, tmp_path):
+    cache = tmp_path / "schedule_2026.csv"
+    pd.DataFrame([{'game_id': 1, 'game_date': '2026-06-26', 'status': 'Scheduled',
+                   'home_score': None, 'away_score': None}]).to_csv(cache, index=False)
+    mocker.patch('src.fetcher._DATA_DIR', tmp_path)
+    mocker.patch('statsapi.schedule', return_value=[])
+    assert refresh_schedule_date(2026, '2026-06-26') == 0
+
 
 def test_get_probable_pitchers_returns_dict(mocker):
     mocker.patch('statsapi.schedule', return_value=MOCK_SCHEDULE)

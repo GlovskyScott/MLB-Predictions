@@ -515,6 +515,54 @@ def get_season_schedule(year: int) -> list[dict]:
     return all_games
 
 
+_schedule_cache_lock = threading.Lock()
+
+
+def refresh_schedule_date(year: int, game_date: str) -> int:
+    """Re-fetch one date from the live API and merge updated status/scores into
+    the cached season schedule (CSV + memory).
+
+    The bundled schedule cache may be snapshotted before a day's games finish,
+    leaving recent dates with games that have no final score. Calling this fills
+    them in so the results comparison can find completed games. Returns the
+    number of games updated; a no-op returning 0 if the live API or cache file
+    is unavailable. Thread-safe (the results backfill runs parallel workers).
+    """
+    try:
+        live = get_schedule(game_date)
+    except Exception:
+        return 0
+    if not live:
+        return 0
+    cache_file = _DATA_DIR / f"schedule_{year}.csv"
+    if not cache_file.exists():
+        return 0
+    live_by_id = {g['game_id']: g for g in live}
+    fields = ('status', 'home_score', 'away_score',
+              'home_probable_pitcher', 'away_probable_pitcher')
+    with _schedule_cache_lock:
+        df = pd.read_csv(cache_file)
+        # An all-empty cached column loads as float64; pandas refuses to store a
+        # string into it. Coerce the columns we write to object first.
+        for f in fields:
+            if f in df.columns:
+                df[f] = df[f].astype(object)
+        mask = df['game_date'].astype(str).str[:10] == game_date
+        updated = 0
+        for idx in df[mask].index:
+            g = live_by_id.get(df.at[idx, 'game_id'])
+            if not g:
+                continue
+            for f in fields:
+                if f in df.columns and g.get(f) is not None:
+                    df.at[idx, f] = g.get(f)
+            updated += 1
+        if updated:
+            df.to_csv(cache_file, index=False)
+            _season_schedule_memory.pop(year, None)  # force reload from CSV
+    return updated
+
+
 def _load_linescore_cache() -> None:
     global _linescore_cache
     if _linescore_cache or not _LINESCORE_CACHE_FILE.exists():
@@ -693,6 +741,18 @@ def get_team_pitching_stats(year: int, force_refresh: bool = False) -> pd.DataFr
 # Weather (Open-Meteo — free, no API key required)
 # ---------------------------------------------------------------------------
 
+def _hour_value(series: list, hour: int, default: float) -> float:
+    """Return series[hour] clamped to the series' own length.
+
+    Each Open-Meteo hourly array is indexed independently — a missing field
+    falls back to a short default list, so indexing every array with one shared
+    index (derived from a longer array) would overflow.
+    """
+    if not series:
+        return default
+    return float(series[min(hour, len(series) - 1)])
+
+
 def get_weather_forecast(lat: float, lon: float, game_datetime: str) -> dict:
     """Fetch weather forecast from Open-Meteo for a future game."""
     game_date = game_datetime[:10]
@@ -713,19 +773,12 @@ def get_weather_forecast(lat: float, lon: float, game_datetime: str) -> dict:
     data = resp.json()
     hourly = data.get('hourly', {})
 
-    temp = hourly.get('temperature_2m', [72.0])
-    wind_s = hourly.get('windspeed_10m', [0.0])
-    wind_d = hourly.get('winddirection_10m', [0.0])
-    precip = hourly.get('precipitation', [0.0])
-    humidity = hourly.get('relative_humidity_2m', [50.0])
-    idx = min(game_hour, len(temp) - 1) if temp else 0
-
     return {
-        'temperature_f': float(temp[idx]) if temp else 72.0,
-        'wind_speed_mph': float(wind_s[idx]) if wind_s else 0.0,
-        'wind_direction_deg': float(wind_d[idx]) if wind_d else 0.0,
-        'precipitation_mm': float(precip[idx]) if precip else 0.0,
-        'humidity_pct': float(humidity[idx]) if humidity else 50.0,
+        'temperature_f': _hour_value(hourly.get('temperature_2m'), game_hour, 72.0),
+        'wind_speed_mph': _hour_value(hourly.get('windspeed_10m'), game_hour, 0.0),
+        'wind_direction_deg': _hour_value(hourly.get('winddirection_10m'), game_hour, 0.0),
+        'precipitation_mm': _hour_value(hourly.get('precipitation'), game_hour, 0.0),
+        'humidity_pct': _hour_value(hourly.get('relative_humidity_2m'), game_hour, 50.0),
         'is_dome': False,
     }
 
@@ -747,19 +800,12 @@ def get_weather_historical(lat: float, lon: float, game_date: str, game_hour: in
     data = resp.json()
     hourly = data.get('hourly', {})
 
-    temp = hourly.get('temperature_2m', [72.0])
-    wind_s = hourly.get('windspeed_10m', [0.0])
-    wind_d = hourly.get('winddirection_10m', [0.0])
-    precip = hourly.get('precipitation', [0.0])
-    humidity = hourly.get('relative_humidity_2m', [50.0])
-    idx = min(game_hour, len(temp) - 1) if temp else 0
-
     return {
-        'temperature_f': float(temp[idx]) if temp else 72.0,
-        'wind_speed_mph': float(wind_s[idx]) if wind_s else 0.0,
-        'wind_direction_deg': float(wind_d[idx]) if wind_d else 0.0,
-        'precipitation_mm': float(precip[idx]) if precip else 0.0,
-        'humidity_pct': float(humidity[idx]) if humidity else 50.0,
+        'temperature_f': _hour_value(hourly.get('temperature_2m'), game_hour, 72.0),
+        'wind_speed_mph': _hour_value(hourly.get('windspeed_10m'), game_hour, 0.0),
+        'wind_direction_deg': _hour_value(hourly.get('winddirection_10m'), game_hour, 0.0),
+        'precipitation_mm': _hour_value(hourly.get('precipitation'), game_hour, 0.0),
+        'humidity_pct': _hour_value(hourly.get('relative_humidity_2m'), game_hour, 50.0),
         'is_dome': False,
     }
 
