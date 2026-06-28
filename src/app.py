@@ -11,7 +11,7 @@ from src.fetcher import (
     get_bullpen_stats, get_season_schedule, get_weather_for_game, get_game_linescore,
     get_game_lineup, bootstrap_data_cache, bootstrap_model_cache,
     bootstrap_predictions_cache, refresh_schedule_date,
-    get_market_odds, market_key,
+    get_market_odds, market_key, devig_home_prob,
 )
 from src.features import build_game_features, build_inning_feature_row, _NEUTRAL_WEATHER, FEATURE_VERSION, FEATURE_COLUMNS
 from src.model import (
@@ -24,6 +24,7 @@ from src.stadiums import get_stadium
 from src.teams import get_team_meta
 from src import predictions as _pred
 from src import calibration as _cal
+from src import blend as _blend
 from src.colors import hex_to_rgb_str as _hex_to_rgb_str, bar_color as _bar_color
 from src.explanations import (
     _explanation_cache, _load_disk_explanations, _build_explain_prompt,
@@ -47,6 +48,7 @@ _results_cache: dict = {}
 _last_results_date: str = ""
 _actuals_cache: dict = {}  # settled date -> {game_id: final game}; avoids redundant live refreshes
 _calibrator_cache: dict = {}  # data-dir -> PlattCalibrator|None; win% calibration loaded lazily
+_blender_cache: dict = {}  # data-dir -> MarketBlender|None; market blend loaded lazily
 
 
 def _get_calibrator(filename=_cal.CALIBRATOR_FILE):
@@ -101,6 +103,34 @@ def _calibrate_core(core: dict) -> dict:
             vals = core.get(key)
             if vals:
                 out[key] = [_cal.calibrate_pct(inn_cal, v) for v in vals]
+    return out
+
+
+def _get_blender():
+    """Load (and cache) the market blender for the active data dir."""
+    key = str(_DATA_DIR)
+    if key not in _blender_cache:
+        _blender_cache[key] = _blend.load(_DATA_DIR)
+    return _blender_cache[key]
+
+
+def _blend_core(core: dict, market_home_prob: "float | None") -> dict:
+    """Return a copy whose home/away win% is the market-blended ('Consensus')
+    line, with the calibrated model-only value preserved under model_*.
+
+    The blender consumes the RAW model prob (it was fit on raw logits). Falls back
+    to the (calibrated) model line when there is no blender or no market line."""
+    out = dict(core)
+    model_home = core.get('home_win_pct')        # already calibrated by _calibrate_core
+    out['model_home_win_pct'] = model_home
+    out['model_away_win_pct'] = core.get('away_win_pct')
+    raw_home = core.get('raw_home_win_pct', model_home)
+    # market_home_prob is a 0-1 fraction (devig_home_prob); blend_pct wants 0-100.
+    market_home_pct = market_home_prob * 100.0 if market_home_prob is not None else None
+    blended = _blend.blend_pct(_get_blender(), raw_home, market_home_pct)
+    if blended is not None:
+        out['home_win_pct'] = blended
+        out['away_win_pct'] = round(100.0 - blended, 1)
     return out
 
 
@@ -322,12 +352,26 @@ def run_daily_simulation(sim_date: str = None) -> list[dict]:
     market = get_market_odds(sim_date)
     schedule = get_schedule(sim_date)
 
+    # Snapshot today's moneylines write-once — a load-bearing input to the blended
+    # ("Consensus") line, so the headline is reproducible when this date is graded.
+    snap = {}
+    for game in schedule:
+        mk = market.get(market_key(game.get('away_name', ''), game.get('home_name', '')))
+        if mk and mk.get('ml_home') is not None and mk.get('ml_away') is not None:
+            snap[game['game_id']] = {'ml_home': mk['ml_home'], 'ml_away': mk['ml_away']}
+    try:
+        _pred.save_market_odds(_DATA_DIR, sim_date, snap)
+    except Exception:
+        pass
+
     results = []
     for game in schedule:
         try:
             g = _enrich_game(game, cores.get(game['game_id'], {}))
             mk = market.get(market_key(g.get('away_name', ''), g.get('home_name', '')))
-            g['market'] = _market_block(g, mk) if mk else None
+            market_home_prob = devig_home_prob(mk.get('ml_home'), mk.get('ml_away')) if mk else None
+            g.update(_blend_core(g, market_home_prob))   # Consensus headline; model_* preserved
+            g['market'] = _market_block(g, mk) if mk else None   # edge = Consensus vs market
             g['best_edge'] = _best_edge(g['market'])
             results.append(g)
         except Exception as e:

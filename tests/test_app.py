@@ -482,3 +482,41 @@ def test_chat_route_streams(client, mocker):
     assert r.status_code == 200 and r.get_data(as_text=True) == 'Hello there'
     # empty conversation rejected
     assert client.post('/chat', json={'messages': []}).status_code == 400
+
+
+# ---- market blend (Consensus moneyline) ------------------------------------
+
+def test_blend_core_replaces_winpct_with_blend(tmp_path, mocker):
+    import src.app as app
+    from src import blend
+    mocker.patch.object(app, '_DATA_DIR', tmp_path)
+    app._blender_cache.clear()
+    blend.save(blend.MarketBlender(a=0.5, b=0.5, c=0.0), tmp_path)
+    core = {'home_win_pct': 80.0, 'away_win_pct': 20.0, 'raw_home_win_pct': 80.0}
+    out = app._blend_core(core, market_home_prob=0.50)
+    assert 50.0 < out['home_win_pct'] < 80.0          # pulled toward market
+    assert out['away_win_pct'] == round(100 - out['home_win_pct'], 1)
+    assert out['model_home_win_pct'] == 80.0          # model-only preserved
+    app._blender_cache.clear()
+
+
+def test_blend_core_falls_back_without_market(tmp_path, mocker):
+    import src.app as app
+    from src import blend
+    mocker.patch.object(app, '_DATA_DIR', tmp_path)
+    app._blender_cache.clear()
+    blend.save(blend.MarketBlender(a=0.5, b=0.5, c=0.0), tmp_path)
+    core = {'home_win_pct': 64.0, 'away_win_pct': 36.0, 'raw_home_win_pct': 64.0}
+    out = app._blend_core(core, market_home_prob=None)
+    assert out['home_win_pct'] == 64.0                # unchanged
+    assert out['model_home_win_pct'] == 64.0
+    app._blender_cache.clear()
+
+
+def test_blend_core_identity_without_blender(tmp_path, mocker):
+    import src.app as app
+    mocker.patch.object(app, '_DATA_DIR', tmp_path)
+    app._blender_cache.clear()                         # no blender file
+    core = {'home_win_pct': 64.0, 'away_win_pct': 36.0, 'raw_home_win_pct': 64.0}
+    out = app._blend_core(core, market_home_prob=0.50)
+    assert out['home_win_pct'] == 64.0
