@@ -219,7 +219,10 @@ function renderDetail() {
   const betPctColor = g.hasEdge ? EDGE : '#7c828e';
   const betHeadline = g.hasEdge ? `+${g.edgePct}%` : '—';
   const betLine = g.hasEdge ? `Take ${esc(g.pick)} moneyline` : `Lean ${esc(g.pick)}, no edge`;
-  const betSub = g.hasEdge ? `Consensus has ${esc(g.pick)} at ${g.pickPct}% vs the market line` : `Model and market agree — pass on a bet`;
+  // hasEdge: an AI edge angle fills in async (fetchEdge); show the deterministic
+  // consensus line as the fallback until it arrives (and if Ollama is down).
+  const betFallback = `Consensus has ${esc(g.pick)} at ${g.pickPct}% vs the market line`;
+  const betSub = g.hasEdge ? `<span id="edgeSub-${g.id}">${betFallback}</span>` : `Model and market agree — pass on a bet`;
   const labels = g.scoreDist.labels || [];
   const n = Math.min(labels.length, 13);
   const axis = labels.slice(0, n).map(k => `<div class="num" style="flex:1;text-align:center;font:500 8.5px system-ui;color:#5a606b;">${k}</div>`).join('');
@@ -322,6 +325,7 @@ function render(scrollTop = true) {
     screen.innerHTML = renderDetail();
     wireDetail();
     setExplain(state.openId);   // restore the AI read after the DOM is rebuilt
+    setEdge(state.openId);      // restore the AI edge angle in "The bet"
   } else if (state.tab === 'today') {
     screen.innerHTML = renderToday();
     screen.querySelectorAll('[data-open]').forEach(el => el.onclick = () => openGame(+el.dataset.open));
@@ -333,13 +337,48 @@ function render(scrollTop = true) {
   }
   window.scrollTo(0, scrollTop ? 0 : y);
 }
-function openGame(id) { state.openId = id; state.showLineups = false; state.innView = 'both'; render(); streamExplanation(id); }
+function openGame(id) {
+  state.openId = id; state.showLineups = false; state.innView = 'both';
+  render();
+  const g = gameById(id);
+  // Ollama serves one generation at a time on a single-threaded dev server, so
+  // stream the short edge angle first, then start the longer AI-read stream.
+  if (g && g.hasEdge) streamEdge(id, () => streamExplanation(id));
+  else streamExplanation(id);
+}
 function wireDetail() {
   const g = gameById(state.openId);
   document.getElementById('detailBack').onclick = () => { state.openId = null; render(); };
   document.getElementById('lineupToggle').onclick = () => { state.showLineups = !state.showLineups; render(false); };
   document.getElementById('detailDiscuss').onclick = () => discussGame(g.id, `${g.away} @ ${g.home}`);
   document.querySelectorAll('[data-inn]').forEach(el => el.onclick = () => { state.innView = el.dataset.inn; render(false); });
+}
+
+/* ---------- AI edge angle (/edge) ---------- */
+// Short (<=12 word) AI angle for "The bet". Buffered per game so it survives
+// in-place re-renders; falls back to the deterministic consensus line if empty.
+const edgeText = {};   // gameId -> summary (undefined = not started, '' = none yet)
+function setEdge(id) {
+  const el = document.getElementById('edgeSub-' + id);
+  if (el && edgeText[id]) el.textContent = edgeText[id];
+}
+// Stream the edge angle so it types in as Ollama generates it. The fallback
+// consensus line stays until the first token arrives (and if Ollama is down).
+function streamEdge(id, onDone) {
+  const done = onDone || (() => {});
+  if (edgeText[id] !== undefined) { setEdge(id); done(); return; }
+  edgeText[id] = '';
+  let text = '';
+  const es = new EventSource('/edge/' + id);
+  es.onmessage = e => {
+    if (e.data === '[DONE]') { es.close(); done(); return; }
+    try {
+      const c = JSON.parse(e.data);
+      if (c.error) { es.close(); done(); }
+      else if (c.text) { text += c.text; edgeText[id] = text; setEdge(id); }
+    } catch (_) {}
+  };
+  es.onerror = () => { es.close(); done(); };
 }
 
 /* ---------- AI read (SSE /explain) ---------- */
@@ -385,7 +424,7 @@ function discussGame(id, label) {
 function renderChat() {
   const box = document.getElementById('chatMsgs');
   if (!chatMessages.length) {
-    box.innerHTML = `<div style="margin:auto;text-align:center;max-width:280px;"><div style="font:600 13px system-ui;color:#8b93a3;line-height:1.5;">Ask about tonight's edges, a matchup, or pitching.</div><div style="font:500 11.5px system-ui;color:#5a606b;margin-top:8px;line-height:1.6;">e.g. "What's the best bet tonight?" · "Why do you like the Mets?"</div></div>`;
+    box.innerHTML = `<div style="margin:auto;text-align:center;white-space:nowrap;"><div style="font:600 13px system-ui;color:#8b93a3;line-height:1.5;">Ask about tonight's edges, a matchup, or pitching.</div><div style="font:500 11.5px system-ui;color:#5a606b;margin-top:8px;line-height:1.6;">e.g. "What's the best bet tonight?" · "Why do you like the Mets?"</div></div>`;
     return;
   }
   box.innerHTML = '';

@@ -138,6 +138,79 @@ def _generate_explanation_sync(game: dict) -> str:
         return ''
 
 
+_edge_summary_cache: dict = {}  # game_id → short (<=12 word) edge angle
+
+
+def _build_edge_prompt(game: dict) -> str:
+    """Prompt for a one-sentence (<=12 word) angle on why to take the model's
+    edge pick — the reasoning, not a restatement of the win% or odds."""
+    f = game.get('features', {})
+    aw, hw = game.get('away_abbr', 'AWAY'), game.get('home_abbr', 'HOME')
+    fav_home = game.get('home_win_pct', 50) >= game.get('away_win_pct', 50)
+    pick = hw if fav_home else aw
+    pick_p = game.get('home_pitcher' if fav_home else 'away_pitcher', 'the starter')
+    opp = aw if fav_home else hw
+    mk = game.get('market') or {}
+    return (
+        f"You are a sharp MLB betting analyst. The model likes {pick} over {opp} "
+        f"(+{mk.get('edge_ml_pct', 0)}% edge vs the market), behind {pick_p}.\n"
+        f"Give the bettor the KEY ANGLE for taking {pick} in ONE punchy, complete "
+        f"sentence — aim for about 8 words, no more than 14. Do NOT restate the "
+        f"win %, the odds, or the projected score — only the reasoning. Plain text, "
+        f"no quotes.\nAngle:"
+    )
+
+
+def _first_sentence_break(s: str) -> int:
+    """Index of the first sentence-ending terminator followed by a space (so a
+    decimal like 3.82 doesn't count), or -1. Used to stop after one sentence."""
+    best = -1
+    for sep in ('. ', '! ', '? '):
+        i = s.find(sep)
+        if i != -1 and (best == -1 or i < best):
+            best = i
+    return best
+
+
+def _stream_edge_summary(game: dict, game_id: int = None):
+    """Stream the edge angle from Ollama as SSE deltas so it types in as it
+    generates. Emits the first complete sentence only (no mid-thought chopping);
+    brevity is encouraged by the prompt. Caches the final text. Yields
+    {'error': ...} on failure so the client keeps its deterministic fallback."""
+    sent = ''  # cleaned text already emitted to the client
+    try:
+        resp = _requests.post(
+            _OLLAMA_URL,
+            json={'model': _OLLAMA_MODEL, 'prompt': _build_edge_prompt(game),
+                  'stream': True, 'options': {'num_predict': 48, 'temperature': 0.6}},
+            stream=True, timeout=60,
+        )
+        acc = ''
+        for raw in resp.iter_lines():
+            if not raw:
+                continue
+            chunk = json.loads(raw)
+            acc += chunk.get('response', '')
+            done = bool(chunk.get('done'))
+            cleaned = acc.replace('\n', ' ').strip().lstrip('"')
+            brk = _first_sentence_break(cleaned)
+            if brk != -1:           # stop at the end of the first sentence
+                cleaned = cleaned[:brk]
+                done = True
+            delta = cleaned[len(sent):]
+            if delta:
+                sent = cleaned
+                yield f"data: {json.dumps({'text': delta})}\n\n"
+            if done:
+                final = sent.rstrip(' .,;:')
+                if game_id is not None and final:
+                    _edge_summary_cache[game_id] = final
+                yield "data: [DONE]\n\n"
+                return
+    except Exception as exc:
+        yield f"data: {json.dumps({'error': str(exc)})}\n\n"
+
+
 def _pregenerate_explanations(games: list, game_date: str) -> None:
     """Background: generate and persist explanations for all valid games sequentially."""
     for game in games:
