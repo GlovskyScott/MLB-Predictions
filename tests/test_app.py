@@ -300,3 +300,38 @@ def test_archive_unknown_version_404(client, tmp_path, mocker):
     # no versions.json -> unknown version must not touch the filesystem path
     assert client.get('/archive/..%2f..').status_code in (404, 308, 400)
     assert client.get('/archive/bogus').status_code == 404
+
+
+def test_compare_date_win_pct_boundary_50(tmp_path, mocker):
+    import src.app as app
+    from src import predictions as P
+    mocker.patch.object(app, '_DATA_DIR', tmp_path)
+    mocker.patch.object(app, '_current_version', return_value='v1')
+    app._actuals_cache.clear()
+    P.save_prediction(tmp_path, 'v1', '2026-06-26', [{
+        'game_id': 1, 'game_date': '2026-06-26', 'home_id': 147, 'away_id': 111,
+        'home_win_pct': 50.0, 'median_home_score': 4.0, 'median_away_score': 4.0}])
+    mocker.patch('src.app.get_season_schedule', return_value=[{
+        'game_id': 1, 'game_date': '2026-06-26', 'status': 'Final',
+        'home_score': 5, 'away_score': 3, 'home_id': 147, 'away_id': 111}])
+    mocker.patch('src.app.refresh_schedule_date', return_value=0)
+    mocker.patch('src.app.get_team_meta', return_value={
+        'logo_url': '', 'primary': '#111', 'secondary': '#222', 'abbr': 'X'})
+    g = app.compare_date('2026-06-26')['games'][0]
+    # 50.0 is not > 50.0 -> predicts away; home actually won -> incorrect (deterministic)
+    assert g['predicted_home_won'] is False
+    assert g['winner_correct'] is False
+
+
+def test_actuals_for_date_memoizes_settled_dates(mocker):
+    import src.app as app
+    app._actuals_cache.clear()
+    sched = mocker.patch('src.app.get_season_schedule', return_value=[{
+        'game_id': 1, 'game_date': '2026-03-15', 'status': 'Final',
+        'home_score': 5, 'away_score': 3, 'home_id': 147, 'away_id': 111}])
+    mocker.patch('src.app.refresh_schedule_date', return_value=0)
+    a1 = app._actuals_for_date('2026-03-15')   # old/settled -> caches
+    a2 = app._actuals_for_date('2026-03-15')   # served from memo
+    assert a1 == a2 and 1 in a1
+    assert '2026-03-15' in app._actuals_cache
+    assert sched.call_count == 1               # second call didn't recompute
