@@ -686,7 +686,8 @@ def get_pitching_stats(year: int, force_refresh: bool = False) -> pd.DataFrame:
     """Fetch pitching stats from Baseball Reference. Caches to CSV.
 
     Returns columns: Name, Team, ERA, FIP, xFIP, WHIP, K/9, BB/9, HR/9, IP, GS
-    FIP and xFIP are approximated from ERA (not available from bref).
+    bref has no FIP column, so FIP/xFIP are computed from the component rates
+    (real FIP formula; xFIP regresses HR to league average).
     """
     cache_file = _DATA_DIR / f"pitching_{year}.csv"
     if cache_file.exists() and not force_refresh:
@@ -700,9 +701,17 @@ def get_pitching_stats(year: int, force_refresh: bool = False) -> pd.DataFrame:
     ip = df['IP'].fillna(0)
     df['BB/9'] = _safe_div(df['BB'].fillna(0) * 9, ip, default=3.0)
     df['HR/9'] = _safe_div(df['HR'].fillna(0) * 9, ip, default=1.2)
-    # FIP and xFIP not in bref — use ERA as a reasonable proxy
-    df['FIP'] = df['ERA'].fillna(4.50)
-    df['xFIP'] = df['ERA'].fillna(4.50)
+    # bref has no FIP column, but FIP is a closed-form function of the component
+    # rates we already have, so compute the *real* metric instead of copying ERA:
+    #   FIP = (13*HR + 3*BB - 2*SO)/IP + c  ==  (13*HR9 + 3*BB9 - 2*K9)/9 + c
+    # xFIP replaces the pitcher's HR rate with the league average (regressed HR).
+    # (The constant c only shifts every value equally, so it's irrelevant to the
+    # tree models — included for realism.)
+    k9 = df['K/9'].fillna(8.0)
+    _C_FIP = 3.10
+    _LG_HR9 = 1.15  # league-average HR/9, for the regressed-HR xFIP
+    df['FIP'] = ((13 * df['HR/9'] + 3 * df['BB/9'] - 2 * k9) / 9 + _C_FIP).clip(lower=0.5, upper=12.0)
+    df['xFIP'] = ((13 * _LG_HR9 + 3 * df['BB/9'] - 2 * k9) / 9 + _C_FIP).clip(lower=0.5, upper=12.0)
 
     out = df[['Name', 'Team', 'ERA', 'FIP', 'xFIP', 'WHIP', 'K/9', 'BB/9', 'HR/9', 'IP', 'GS']].copy()
     out.to_csv(cache_file, index=False)

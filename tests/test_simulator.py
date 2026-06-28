@@ -78,3 +78,15 @@ def test_simulate_game_output_covers_prediction_fields():
                      'away_name', 'venue_id', 'venue_name'}  # supplied by the schedule, not the sim
     sim_fields = set(PREDICTION_FIELDS) - game_identity
     assert sim_fields.issubset(out.keys()), sim_fields - set(out.keys())
+
+def test_runs_draw_is_overdispersed_vs_poisson():
+    from src.simulator import _runs_draw
+    rng = np.random.RandomState(0)
+    mu = 4.5
+    nb = np.array([_runs_draw(rng, mu, overdispersion=2.0) for _ in range(20000)])
+    po = np.array([_runs_draw(rng, mu, overdispersion=1.0) for _ in range(20000)])
+    # both centered on mu
+    assert abs(nb.mean() - mu) < 0.2 and abs(po.mean() - mu) < 0.2
+    # Poisson: variance ~= mean; negative binomial (overdispersion 2): variance ~= 2*mean
+    assert abs(po.var() / po.mean() - 1.0) < 0.15
+    assert nb.var() / nb.mean() > 1.6        # meaningfully overdispersed
