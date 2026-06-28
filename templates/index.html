@@ -168,6 +168,10 @@ function renderTrack() {
   html += t.yesterday.length ? t.yesterday.map(yrow).join('') : `<div style="padding:6px 4px;color:#565c68;font:500 12px system-ui;">No graded games yet.</div>`;
   html += `<div style="font:700 10px system-ui;letter-spacing:1.4px;color:#565c68;text-transform:uppercase;padding:22px 2px 8px;">Daily accuracy · last 7 days</div>`;
   html += t.daily.length ? t.daily.map(drow).join('') : `<div style="padding:6px 4px;color:#565c68;font:500 12px system-ui;">Building history…</div>`;
+  html += `<a href="/history" style="text-decoration:none;display:flex;align-items:center;justify-content:space-between;gap:12px;background:#11141a;border:1px solid #1e222b;border-radius:13px;padding:14px 16px;margin-top:24px;">
+    <div><div style="font:600 13px system-ui;color:#eef0f4;">All past games &amp; closing lines</div>
+    <div style="font:500 11px system-ui;color:#737a86;margin-top:3px;">Every result with the model's pick, graded against the real closing line.</div></div>
+    <span style="font:600 13px system-ui;color:${ACCENT};white-space:nowrap;">Open ›</span></a>`;
   html += `</div>`;
   return html;
 }
@@ -197,10 +201,6 @@ function renderSettings() {
     <a href="/archive" style="text-decoration:none;display:block;background:#11141a;border:1px solid #1e222b;border-radius:14px;padding:14px 16px;">
       <div style="display:flex;align-items:center;justify-content:space-between;"><span style="font:600 13px system-ui;color:#eef0f4;">Model archive</span><span style="font:600 12px system-ui;color:${ACCENT};">Open ›</span></div>
       <div style="font:500 11.5px system-ui;color:#737a86;margin-top:5px;">Accuracy of every past model version, graded against real finals.</div>
-    </a>
-    <a href="/history" style="text-decoration:none;display:block;background:#11141a;border:1px solid #1e222b;border-radius:14px;padding:14px 16px;margin-top:10px;">
-      <div style="display:flex;align-items:center;justify-content:space-between;"><span style="font:600 13px system-ui;color:#eef0f4;">Historical data</span><span style="font:600 12px system-ui;color:${ACCENT};">Open ›</span></div>
-      <div style="font:500 11.5px system-ui;color:#737a86;margin-top:5px;">Every past game: final score, the model's pick, and the closing line.</div>
     </a>
   </div>`;
 }
