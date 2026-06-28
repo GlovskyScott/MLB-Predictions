@@ -198,15 +198,18 @@
         <div class="lines-strip" title="Model-implied fair lines (no vig), from the simulation">
             <div class="line-item">
                 <div class="line-label">Run line</div>
-                <div class="line-val">{{ r.away_abbr }} {{ r.lines.spread_away }} · {{ r.home_abbr }} {{ r.lines.spread_home }}</div>
+                <div class="line-val">{{ r.away_abbr }} {{ r.lines.spread_away }}</div>
+                <div class="line-val">{{ r.home_abbr }} {{ r.lines.spread_home }}</div>
             </div>
             <div class="line-item">
-                <div class="line-label">Total</div>
-                <div class="line-val">{{ r.lines.total }}</div>
+                <div class="line-label">Total {{ r.lines.total_line }}</div>
+                <div class="line-val">O {{ r.lines.total_over }}</div>
+                <div class="line-val">U {{ r.lines.total_under }}</div>
             </div>
             <div class="line-item">
                 <div class="line-label">Moneyline</div>
-                <div class="line-val">{{ r.away_abbr }} {{ r.lines.ml_away }} · {{ r.home_abbr }} {{ r.lines.ml_home }}</div>
+                <div class="line-val">{{ r.away_abbr }} {{ r.lines.ml_away }}</div>
+                <div class="line-val">{{ r.home_abbr }} {{ r.lines.ml_home }}</div>
             </div>
         </div>
         {% endif %}

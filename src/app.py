@@ -120,36 +120,73 @@ def get_prediction(sim_date: str) -> list[dict]:
     return cores
 
 
-def _market_lines(game: dict) -> dict:
-    """Derive model-implied (fair, no-vig) betting lines from a prediction core.
+def _american(p: float) -> str:
+    """Fair (no-vig) American odds for a probability p."""
+    p = min(max(p, 0.01), 0.99)
+    odds = round(-100 * p / (1 - p)) if p >= 0.5 else round(100 * (1 - p) / p)
+    return f"{odds:+d}"
 
+
+def _market_lines(game: dict) -> dict:
+    """Derive model-implied, sportsbook-style betting lines from a prediction core.
+
+    Real lines are fixed numbers with odds attached, not continuous expectations:
     - moneyline: fair American odds from the win probability
-    - total:     expected combined runs (mean of the simulated score distribution)
-    - spread:    expected run margin (favorite negative), i.e. the run line
-    Returns display-ready strings.
+    - run line:  fixed ±1.5 (MLB standard), odds = P(favorite wins by ≥2)
+    - total:     a .5/.0 line near the expected total, with fair over/under odds
+
+    The run-margin and total distributions are reconstructed by convolving the
+    stored per-team score histograms (the simulator draws the teams' runs
+    independently, so the convolution matches its joint distribution). All values
+    are display-ready strings.
     """
-    def american(p: float) -> str:
-        p = min(max(p, 0.01), 0.99)
-        odds = round(-100 * p / (1 - p)) if p >= 0.5 else round(100 * (1 - p) / p)
-        return f"{odds:+d}"
+    from collections import defaultdict
+
+    ml_home = _american(game.get('home_win_pct', 50.0) / 100.0)
+    ml_away = _american(game.get('away_win_pct', 50.0) / 100.0)
+    blank = {'ml_home': ml_home, 'ml_away': ml_away, 'spread_home': '—',
+             'spread_away': '—', 'total_line': '—', 'total_over': '', 'total_under': ''}
 
     dist = game.get('score_distribution') or {}
+    home_counts, away_counts = dist.get('home') or [], dist.get('away') or []
+    hsum, asum = sum(home_counts), sum(away_counts)
+    if not hsum or not asum:
+        return blank
 
-    def mean_runs(side: str) -> float:
-        counts = dist.get(side) or []
-        labels = dist.get('labels') or list(range(len(counts)))
-        total = sum(counts)
-        return sum(l * c for l, c in zip(labels, counts)) / total if total else 0.0
+    hp = [c / hsum for c in home_counts]   # P(home runs == i)
+    ap = [c / asum for c in away_counts]    # P(away runs == j)
+    margin, total = defaultdict(float), defaultdict(float)
+    for h, ph in enumerate(hp):
+        if not ph:
+            continue
+        for a, pa in enumerate(ap):
+            if pa:
+                margin[h - a] += ph * pa
+                total[h + a] += ph * pa
 
-    home_runs, away_runs = mean_runs('home'), mean_runs('away')
-    margin = home_runs - away_runs   # > 0 => home favored
-    return {
-        'ml_home': american(game.get('home_win_pct', 50.0) / 100.0),
-        'ml_away': american(game.get('away_win_pct', 50.0) / 100.0),
-        'spread_home': f"{-margin:+.1f}",
-        'spread_away': f"{margin:+.1f}",
-        'total': f"{home_runs + away_runs:.1f}",
-    }
+    # ---- Total: nearest half-run line, fair over/under odds ----
+    exp_total = sum(t * p for t, p in total.items())
+    line = round(exp_total * 2) / 2                      # ends in .0 or .5
+    p_over = sum(p for t, p in total.items() if t > line)
+    p_under = sum(p for t, p in total.items() if t < line)
+    denom = (p_over + p_under) or 1.0                    # drop pushes on a .0 line
+    total_line = f"{line:.1f}"
+    total_over, total_under = _american(p_over / denom), _american(p_under / denom)
+
+    # ---- Run line: fixed 1.5, favorite by win probability ----
+    fav_home = game.get('home_win_pct', 50.0) >= game.get('away_win_pct', 50.0)
+    if fav_home:
+        p_cover = sum(p for d, p in margin.items() if d >= 2)   # home wins by ≥2
+        spread_home = f"-1.5 {_american(p_cover)}"
+        spread_away = f"+1.5 {_american(1 - p_cover)}"
+    else:
+        p_cover = sum(p for d, p in margin.items() if d <= -2)  # away wins by ≥2
+        spread_away = f"-1.5 {_american(p_cover)}"
+        spread_home = f"+1.5 {_american(1 - p_cover)}"
+
+    return {'ml_home': ml_home, 'ml_away': ml_away,
+            'spread_home': spread_home, 'spread_away': spread_away,
+            'total_line': total_line, 'total_over': total_over, 'total_under': total_under}
 
 
 def _enrich_game(game: dict, core: dict) -> dict:

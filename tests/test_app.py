@@ -337,23 +337,29 @@ def test_actuals_for_date_memoizes_settled_dates(mocker):
     assert sched.call_count == 1               # second call didn't recompute
 
 
-def test_market_lines_from_core():
+def test_market_lines_runline_total_and_moneyline():
     import src.app as app
+    # home runs ~ {4: .5, 5: .5} (mean 4.5); away runs ~ {3: .5, 4: .5} (mean 3.5)
     core = {
         'home_win_pct': 60.0, 'away_win_pct': 40.0,
-        'score_distribution': {'labels': [4, 5], 'home': [0, 100], 'away': [100, 0]},
+        'score_distribution': {'labels': [0, 1, 2, 3, 4, 5, 6],
+                               'home': [0, 0, 0, 0, 50, 50, 0],
+                               'away': [0, 0, 0, 50, 50, 0, 0]},
     }
-    lines = app._market_lines(core)
-    # fair American odds: 60% -> -150, 40% -> +150
-    assert lines['ml_home'] == '-150' and lines['ml_away'] == '+150'
-    # expected runs home 5, away 4 -> total 9.0, home favored by 1
-    assert lines['total'] == '9.0'
-    assert lines['spread_home'] == '-1.0' and lines['spread_away'] == '+1.0'
+    L = app._market_lines(core)
+    # moneyline: fair odds from win prob
+    assert L['ml_home'] == '-150' and L['ml_away'] == '+150'
+    # run line is the fixed 1.5 with odds; home is the favorite
+    assert L['spread_home'].startswith('-1.5 ') and L['spread_away'].startswith('+1.5 ')
+    # P(home wins by >=2) = 0.25 -> +300 ; the other side -300
+    assert L['spread_home'] == '-1.5 +300' and L['spread_away'] == '+1.5 -300'
+    # total line ends in .0/.5; here expected total 8.0
+    assert L['total_line'] == '8.0'
+    assert L['total_line'].endswith(('.0', '.5'))
+    assert L['total_over'] == '-100' and L['total_under'] == '-100'
 
 
-def test_market_lines_pickem_handles_50_50():
+def test_market_lines_blank_without_distribution():
     import src.app as app
-    lines = app._market_lines({'home_win_pct': 50.0, 'away_win_pct': 50.0,
-                               'score_distribution': {'labels': [4], 'home': [10], 'away': [10]}})
-    assert lines['ml_home'] == '-100' and lines['ml_away'] == '-100'
-    assert lines['total'] == '8.0'
+    L = app._market_lines({'home_win_pct': 55.0, 'away_win_pct': 45.0})
+    assert L['ml_home'] == '-122' and L['spread_home'] == '—' and L['total_line'] == '—'
