@@ -510,6 +510,43 @@ def test_market_total_lines_maps_priced_games_only():
     assert out == {1: 8.5}   # game 2 has no total; game 3 has no market
 
 
+def test_best_edge_picks_largest():
+    import src.app as app
+    assert app._best_edge(None) is None
+    assert app._best_edge({}) is None
+    # only ML priced -> ML wins by default
+    assert app._best_edge({'edge_ml_side': 'BOS', 'edge_ml_pct': 4,
+                           'edge_total_side': '', 'edge_total_pct': None,
+                           'edge_rl_side': '', 'edge_rl_pct': None}) == \
+        {'market': 'ML', 'side': 'BOS', 'pct': 4}
+    # picks the biggest across the three markets
+    best = app._best_edge({'edge_ml_side': 'BOS', 'edge_ml_pct': 3,
+                           'edge_total_side': 'Over', 'edge_total_pct': 7,
+                           'edge_rl_side': 'NYY +1.5', 'edge_rl_pct': 2})
+    assert best == {'market': 'Total', 'side': 'Over', 'pct': 7}
+
+
+def test_top_edges_ranks_and_caps():
+    import src.app as app
+    games = [
+        {'game_id': 1, 'home_abbr': 'BAL', 'away_abbr': 'WSN',
+         'market': {'edge_ml_side': 'WSN', 'edge_ml_pct': 3,
+                    'edge_total_side': 'Under', 'edge_total_pct': 9,
+                    'edge_rl_side': '', 'edge_rl_pct': None}},
+        {'game_id': 2, 'home_abbr': 'NYY', 'away_abbr': 'BOS', 'market': None},  # skipped
+        {'game_id': 3, 'home_abbr': 'LAD', 'away_abbr': 'SDP',
+         'market': {'edge_ml_side': 'LAD', 'edge_ml_pct': 5,
+                    'edge_total_side': '', 'edge_total_pct': None,
+                    'edge_rl_side': 'LAD -1.5', 'edge_rl_pct': 1}},
+    ]
+    out = app._top_edges(games, n=2)
+    assert len(out) == 2                                  # capped
+    assert [e['pct'] for e in out] == [9, 5]              # ranked desc
+    assert out[0] == {'game_id': 1, 'matchup': 'WSN @ BAL',
+                      'market': 'Total', 'side': 'Under', 'pct': 9}
+    assert all(e['game_id'] != 2 for e in out)            # no-market game skipped
+
+
 def test_chat_context_includes_games_and_model(mocker):
     import src.app as app
     mocker.patch.object(app, '_simulation_cache', [{
