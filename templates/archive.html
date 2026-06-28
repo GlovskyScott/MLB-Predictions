@@ -44,10 +44,11 @@
             <tr>
                 <td class="mono">
                     <a href="/archive/{{ v.version }}">{{ v.version }}</a>
+                    {% if v.release %}<span class="tag" style="background:#444">{{ v.release }}</span>{% endif %}
                     {% if v.is_current %}<span class="tag">current</span>{% endif %}
                 </td>
                 <td class="muted">{{ (v.created_at or '')[:10] }}</td>
-                <td>v{{ v.feature_version if v.feature_version is not none else '?' }}</td>
+                <td>{% if v.feature_version is not none %}v{{ v.feature_version }}{% elif v.features %}{{ v.features }}-feat{% else %}?{% endif %}</td>
                 <td>{{ v.n_games if v.n_games is not none else '—' }}</td>
                 <td>{{ v.days_with_games }}</td>
                 <td>{{ v.total_games }}</td>

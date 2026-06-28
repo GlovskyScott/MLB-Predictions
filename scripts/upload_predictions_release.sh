@@ -28,7 +28,9 @@ echo "Versions included:"
 python3 - "$PRED_DIR/versions.json" <<'PY'
 import json, sys
 for v in json.load(open(sys.argv[1])):
-    print(f"  {v['version']}  feat v{v.get('feature_version','?')}  {v.get('n_games','?')} games  {v.get('created_at','')[:10]}")
+    fv = v.get('feature_version')
+    tag = v['release'] if v.get('release') else (f"feat v{fv}" if fv is not None else f"{v.get('features','?')}-feat")
+    print(f"  {v['version']}  {tag:10}  {v.get('n_games','?')} games  {v.get('created_at','')[:10]}")
 PY
 
 # Delete existing release/tag if present so we can re-upload

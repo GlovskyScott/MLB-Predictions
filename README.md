@@ -216,6 +216,30 @@ version with its rollup winner-accuracy and average score error, drilling into
 per-date predictions vs actuals. `data/predictions/versions.json` is the registry
 of known versions.
 
+### Legacy models (pre-v4 releases)
+
+The `v1.0.0` / `v1.1.0` release models were trained on a 32-feature pipeline that
+the current 44-feature code can't reproduce, so they're graded **faithfully** by
+replaying each model's own era's code. To reconstruct one:
+
+```bash
+# 1) generate its predictions using its own pipeline, in a worktree at its commit
+git worktree add --detach /tmp/mlb-legacy <commit-with-32-feature-pipeline>
+ln -s "$(pwd)/data" /tmp/mlb-legacy/data
+cd /tmp/mlb-legacy
+OLD_PKL=/path/to/release/pkls OUT_DIR=/tmp/legacy_staging \
+    python scripts/import_legacy_predictions.py
+
+# 2) register it into the archive (from the current checkout)
+python scripts/register_legacy_version.py \
+    --pkl-dir /path/to/release/pkls --staging /tmp/legacy_staging \
+    --release v1.0.0 --created-at 2026-06-26T07:10:49Z --features 32 --n-games 5921
+```
+
+Legacy versions carry a `release` tag and `features` count in the registry (no
+`feature_version`, since they predate that numbering) and grade on the same
+simulation settings as current models, isolating the model as the variable.
+
 ## Data releases
 
 Model pkl files and the data cache are stored as GitHub release assets (excluded from git via `.gitignore`).

@@ -723,7 +723,8 @@ def create_app(testing: bool = False) -> Flask:
                 'avg_score_err': s['avg_score_err'],
                 'is_current': v['version'] == current,
             })
-        rows.reverse()  # newest first
+        # Newest first by training/registration time (registry order is not relied on).
+        rows.sort(key=lambda r: r.get('created_at', ''), reverse=True)
         return render_template('archive.html', versions=rows)
 
     @app.route('/archive/<version>')
