@@ -64,7 +64,7 @@ python scripts/backtest.py
 
 ### Calibrated win probabilities
 
-The same overconfidence shows up in the *probabilities*: walk-forward, a simulated "72%" actually wins ~61%. Left uncorrected, comparing those inflated numbers to an efficient sportsbook line manufactures fake "edges" of 7–14% — which is what a real edge never looks like. So the displayed win% is run through a **temperature-scaling calibrator** (`src/calibration.py`, fit on out-of-sample predictions) before it's shown or used for the moneyline edge. It only rescales confidence — it passes exactly through 50%, so the winner pick and every graded accuracy number are unchanged; the fake moneyline edges collapse to a realistic 0–3%. Rebuild it after a retrain with `python -m scripts.build_calibrator`.
+The same overconfidence shows up in the *probabilities*: walk-forward, a simulated "72%" actually wins ~61%. Left uncorrected, comparing those inflated numbers to an efficient sportsbook line manufactures fake "edges" of 7–14% — which is what a real edge never looks like. So the displayed win% is run through a **temperature-scaling calibrator** (`src/calibration.py`, fit on out-of-sample predictions) before it's shown or used for the moneyline edge. It only rescales confidence — it passes exactly through 50%, so the winner pick and every graded accuracy number are unchanged; the fake moneyline edges collapse to a realistic 0–3%. The per-inning scoring probabilities get the same treatment, though there the model turns out to already be well-calibrated (walk-forward slope ≈ 0.97), so that map is essentially the identity. Rebuild both after a retrain with `python -m scripts.build_calibrator`.
 
 ---
 

@@ -48,33 +48,41 @@ _actuals_cache: dict = {}  # settled date -> {game_id: final game}; avoids redun
 _calibrator_cache: dict = {}  # data-dir -> PlattCalibrator|None; win% calibration loaded lazily
 
 
-def _get_calibrator():
-    """Load (and cache) the win-probability calibrator for the active data dir.
+def _get_calibrator(filename=_cal.CALIBRATOR_FILE):
+    """Load (and cache) a calibrator for the active data dir.
 
-    Keyed on _DATA_DIR so tests that patch it to a tmp_path (with no calibrator,
-    -> None -> identity) stay isolated from the real one.
+    Keyed on (_DATA_DIR, filename) so tests that patch it to a tmp_path (with no
+    calibrator -> None -> identity) stay isolated from the real one.
     """
-    key = str(_DATA_DIR)
+    key = (str(_DATA_DIR), filename)
     if key not in _calibrator_cache:
-        _calibrator_cache[key] = _cal.load(_DATA_DIR)
+        _calibrator_cache[key] = _cal.load(_DATA_DIR, filename)
     return _calibrator_cache[key]
 
 
 def _calibrate_core(core: dict) -> dict:
-    """Return a copy of a prediction core with its win% calibrated for display.
+    """Return a copy of a prediction core with its win% and per-inning scoring
+    probabilities calibrated for display.
 
-    The raw simulated win% is overconfident out-of-sample; the calibrator pulls
-    it back toward the true rate (see src/calibration.py). Monotonic through 50%,
-    so the favored side — and therefore the graded pick — never changes. The
-    stored core on disk is untouched; this only affects what is shown and the
-    edge math. No-op when no calibrator is present (identity)."""
-    cal = _get_calibrator()
+    The raw simulated win% — and the inning classifier's P(score>=1) — are
+    overconfident out-of-sample; the calibrators pull them back toward the true
+    rate (see src/calibration.py). The win% map is monotonic through 50%, so the
+    favored side — and therefore the graded pick — never changes. The stored core
+    on disk is untouched; this only affects what is shown and the edge math.
+    No-op for whichever calibrators are absent (identity)."""
+    out = dict(core)
+    win_cal = _get_calibrator()
     hwp = core.get('home_win_pct')
-    if cal is None or hwp is None:
-        return core
-    hp = _cal.calibrate_pct(cal, hwp)
-    return {**core, 'home_win_pct': hp, 'away_win_pct': round(100.0 - hp, 1),
-            'raw_home_win_pct': hwp}
+    if win_cal is not None and hwp is not None:
+        hp = _cal.calibrate_pct(win_cal, hwp)
+        out.update(home_win_pct=hp, away_win_pct=round(100.0 - hp, 1), raw_home_win_pct=hwp)
+    inn_cal = _get_calibrator(_cal.INNING_CALIBRATOR_FILE)
+    if inn_cal is not None:
+        for key in ('home_innings_scoring_pct', 'away_innings_scoring_pct'):
+            vals = core.get(key)
+            if vals:
+                out[key] = [_cal.calibrate_pct(inn_cal, v) for v in vals]
+    return out
 
 
 def _current_version() -> str | None:
@@ -359,23 +367,49 @@ def run_daily_simulation(sim_date: str = None) -> list[dict]:
     return results
 
 
+def _inning_scoring_lines(g: dict) -> str:
+    """Compact per-inning P(score>=1) for away / home / either (calibrated)."""
+    ap, hp = g.get('away_innings_scoring_pct'), g.get('home_innings_scoring_pct')
+    if not ap or not hp:
+        return ""
+    aw, hw = g.get('away_abbr', 'AWAY'), g.get('home_abbr', 'HOME')
+    either = [round((1 - (1 - a / 100) * (1 - h / 100)) * 100) for a, h in zip(ap, hp)]
+    fmt = lambda xs: "/".join(f"{round(x)}" for x in xs)
+    return (f"P(team scores >=1 run) by inning 1-9 — {aw}: {fmt(ap)}; "
+            f"{hw}: {fmt(hp)}; either team: {fmt(either)} (percent).")
+
+
 def _game_chat_line(g: dict) -> str:
-    """One terse factual line about a game for the chatbot context."""
+    """A factual block about a game for the chatbot context: predictions, the
+    full inning-by-inning scoring breakdown, venue/weather, lines and edges."""
     m = g.get('lines') or {}
     mk = g.get('market') or {}
+    w = g.get('weather') or {}
     aw, hw = g.get('away_abbr', '?'), g.get('home_abbr', '?')
     parts = [
         f"{aw} @ {hw} ({g.get('away_name')} at {g.get('home_name')}):",
         f"model win% {aw} {g.get('away_win_pct')}% / {hw} {g.get('home_win_pct')}%,",
-        f"predicted {g.get('modal_away_score')}-{g.get('modal_home_score')};",
+        f"predicted runs {aw} {g.get('predicted_away_runs')} / {hw} {g.get('predicted_home_runs')} "
+        f"(most-likely score {g.get('modal_away_score')}-{g.get('modal_home_score')}, "
+        f"median {g.get('median_away_score')}-{g.get('median_home_score')});",
         f"SP {g.get('away_pitcher')} vs {g.get('home_pitcher')};",
     ]
+    venue = g.get('venue_name')
+    if venue:
+        cond = "indoor dome" if w.get('is_dome') else (
+            f"{w.get('temperature_f')}F, wind {w.get('wind_speed_mph')}mph" if w.get('temperature_f') is not None else "")
+        parts.append(f"venue {venue} ({g.get('elevation_ft', '?')} ft{', ' + cond if cond else ''});")
+    inn = _inning_scoring_lines(g)
+    if inn:
+        parts.append(inn)
     if m:
-        parts.append(f"model total {m.get('total_line')}, ML {aw} {m.get('ml_away')}/{hw} {m.get('ml_home')};")
+        parts.append(f"model fair lines: total {m.get('total_line')}, run line {m.get('spread_home')} (home)/"
+                     f"{m.get('spread_away')} (away), ML {aw} {m.get('ml_away')}/{hw} {m.get('ml_home')};")
     if mk:
         parts.append(
-            f"ESPN total {mk.get('total')}, ML {aw} {mk.get('ml_away')}/{hw} {mk.get('ml_home')}; "
-            f"model edges: ML {mk.get('edge_ml_side')} +{mk.get('edge_ml_pct')}%, "
+            f"ESPN avg line ({mk.get('n_books', 0)} books): total {mk.get('total')}, "
+            f"ML {aw} {mk.get('ml_away')}/{hw} {mk.get('ml_home')}; "
+            f"model edges vs market: ML {mk.get('edge_ml_side')} +{mk.get('edge_ml_pct')}%, "
             f"total {mk.get('edge_total_side')} +{mk.get('edge_total_pct')}%, "
             f"run line {mk.get('edge_rl_side')} +{mk.get('edge_rl_pct')}%."
         )

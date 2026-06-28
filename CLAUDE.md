@@ -102,8 +102,9 @@ The displayed win% is the Monte-Carlo output of the run regressors (`simulate_ga
 - **Serve-time only.** Applied in `_calibrate_core` (called by `_enrich_game` and `compare_date`). The stored prediction core on disk is **never** rewritten, so it's *not* a model/version change — no fork, no re-sim, and the `prediction-archive` stays byte-identical.
 - **Pick-preserving.** Fit with **no intercept** (`b == 0`), so the curve passes exactly through 0.5 and is monotonic. It only rescales confidence; it never flips the favored side, so `winner_correct` (`home_win_pct > 50`) and every graded accuracy number are unchanged. (A fitted intercept would pick up a small home-field bias but flip near-coinflip picks — deliberately dropped.)
 - **Optional.** `_get_calibrator()` returns `None` when `data/model_calibrator.pkl` is absent → identity → uncalibrated (raw) win%. Tests that patch `_DATA_DIR` to a `tmp_path` get the identity automatically.
-- **Rebuild after a retrain:** `python -m scripts.build_calibrator` (walk-forward; ~1–2 min). It's a model artifact in the `latest` release (restored best-effort by `bootstrap_model_cache`), **not** in `_MODEL_PKLS` and **not** in the version hash.
-- **Scope:** only the moneyline/win% is calibrated. The run-line and total edges still derive from the raw score distribution — calibrating those is a separate follow-up.
+- **Rebuild after a retrain:** `python -m scripts.build_calibrator` (walk-forward; ~1–2 min). It builds **both** calibrators — `model_calibrator.pkl` (win%) and `model_inning_calibrator.pkl` (per-inning P(score≥1)). Both are model artifacts in the `latest` release (restored best-effort by `bootstrap_model_cache`), **not** in `_MODEL_PKLS` and **not** in the version hash.
+- **Inning calibration:** `_calibrate_core` also calibrates `home/away_innings_scoring_pct` (the "either" row is derived from them in the template). Empirically the inning classifier is *already* well-calibrated (walk-forward slope ≈ 0.97), so this map is near-identity — applied for consistency/robustness, but it barely moves the numbers. The win% map, by contrast, is a hard shrink (slope ≈ 0.48).
+- **Scope:** the moneyline/win% and the per-inning scoring %s are calibrated. The run-line and total edges still derive from the raw score distribution — calibrating those is a separate follow-up.
 
 ## Conventions & gotchas
 

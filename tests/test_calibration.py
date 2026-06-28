@@ -65,6 +65,49 @@ def test_enrich_applies_calibration_and_keeps_pick(mocker):
     assert round(out['home_win_pct'] + out['away_win_pct'], 1) == 100.0
 
 
+def test_calibrate_core_calibrates_inning_pcts(mocker):
+    """_calibrate_core applies the inning calibrator to both per-inning lists."""
+    import src.app as app
+
+    def fake(filename=cal.CALIBRATOR_FILE):
+        # win map shrinks hard; inning map is a gentle shrink
+        return cal.PlattCalibrator(a=0.5, b=0.0) if filename == cal.CALIBRATOR_FILE \
+            else cal.PlattCalibrator(a=0.9, b=0.0)
+
+    mocker.patch('src.app._get_calibrator', side_effect=fake)
+    core = {
+        'home_win_pct': 72.0, 'away_win_pct': 28.0,
+        'home_innings_scoring_pct': [40.0] * 9,
+        'away_innings_scoring_pct': [30.0] * 9,
+    }
+    out = app._calibrate_core(core)
+    assert out['home_win_pct'] < 72.0                       # win calibrated down (above 50)
+    assert len(out['home_innings_scoring_pct']) == 9
+    # inning pct shrinks toward 50%, so a 40% nudges up toward 50 (but stays < 50)
+    assert 40.0 < out['home_innings_scoring_pct'][0] < 50.0
+    assert 30.0 < out['away_innings_scoring_pct'][0] < 50.0
+    assert all(0 <= v <= 100 for v in out['away_innings_scoring_pct'])
+    # the stored core is not mutated
+    assert core['home_innings_scoring_pct'][0] == 40.0
+
+
+def test_game_chat_line_includes_inning_breakdown():
+    import src.app as app
+    g = {
+        'away_abbr': 'BOS', 'home_abbr': 'NYY', 'away_name': 'Red Sox', 'home_name': 'Yankees',
+        'away_win_pct': 40.0, 'home_win_pct': 60.0,
+        'predicted_away_runs': 4.1, 'predicted_home_runs': 4.8,
+        'modal_away_score': 3, 'modal_home_score': 5, 'median_away_score': 4.0, 'median_home_score': 4.0,
+        'away_pitcher': 'A', 'home_pitcher': 'B',
+        'away_innings_scoring_pct': [30, 28, 29, 30, 30, 30, 27, 27, 25],
+        'home_innings_scoring_pct': [34, 30, 32, 32, 32, 31, 26, 26, 14],
+    }
+    line = app._game_chat_line(g)
+    assert 'by inning 1-9' in line
+    assert 'either team' in line
+    assert 'predicted runs' in line
+
+
 def _synthetic():
     rng = np.random.RandomState(1)
     raw = rng.uniform(0.05, 0.95, 4000)

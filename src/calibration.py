@@ -21,7 +21,8 @@ from pathlib import Path
 
 import joblib
 
-CALIBRATOR_FILE = "model_calibrator.pkl"
+CALIBRATOR_FILE = "model_calibrator.pkl"              # win% calibrator
+INNING_CALIBRATOR_FILE = "model_inning_calibrator.pkl"  # per-inning P(score) calibrator
 _EPS = 1e-6
 
 
@@ -75,20 +76,20 @@ def fit(raw_probs, outcomes) -> PlattCalibrator:
     return PlattCalibrator(a=float(lr.coef_[0][0]), b=0.0)
 
 
-def save(cal: PlattCalibrator, data_dir) -> Path:
-    path = Path(data_dir) / CALIBRATOR_FILE
+def save(cal: PlattCalibrator, data_dir, filename: str = CALIBRATOR_FILE) -> Path:
+    path = Path(data_dir) / filename
     path.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump({"a": cal.a, "b": cal.b}, path)
     return path
 
 
-def load(data_dir) -> PlattCalibrator | None:
-    """Load the calibrator for `data_dir`, or None if none has been built.
+def load(data_dir, filename: str = CALIBRATOR_FILE) -> PlattCalibrator | None:
+    """Load a calibrator for `data_dir`, or None if none has been built.
 
     Safety: this pkl is written by build_calibrator.py in this codebase, never
     sourced from user input or network. Joblib is acceptable here.
     """
-    path = Path(data_dir) / CALIBRATOR_FILE
+    path = Path(data_dir) / filename
     if not path.exists():
         return None
     d = joblib.load(path)
