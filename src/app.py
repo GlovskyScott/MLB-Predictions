@@ -120,6 +120,38 @@ def get_prediction(sim_date: str) -> list[dict]:
     return cores
 
 
+def _market_lines(game: dict) -> dict:
+    """Derive model-implied (fair, no-vig) betting lines from a prediction core.
+
+    - moneyline: fair American odds from the win probability
+    - total:     expected combined runs (mean of the simulated score distribution)
+    - spread:    expected run margin (favorite negative), i.e. the run line
+    Returns display-ready strings.
+    """
+    def american(p: float) -> str:
+        p = min(max(p, 0.01), 0.99)
+        odds = round(-100 * p / (1 - p)) if p >= 0.5 else round(100 * (1 - p) / p)
+        return f"{odds:+d}"
+
+    dist = game.get('score_distribution') or {}
+
+    def mean_runs(side: str) -> float:
+        counts = dist.get(side) or []
+        labels = dist.get('labels') or list(range(len(counts)))
+        total = sum(counts)
+        return sum(l * c for l, c in zip(labels, counts)) / total if total else 0.0
+
+    home_runs, away_runs = mean_runs('home'), mean_runs('away')
+    margin = home_runs - away_runs   # > 0 => home favored
+    return {
+        'ml_home': american(game.get('home_win_pct', 50.0) / 100.0),
+        'ml_away': american(game.get('away_win_pct', 50.0) / 100.0),
+        'spread_home': f"{-margin:+.1f}",
+        'spread_away': f"{margin:+.1f}",
+        'total': f"{home_runs + away_runs:.1f}",
+    }
+
+
 def _enrich_game(game: dict, core: dict) -> dict:
     """Combine a schedule game shell with its frozen prediction core and the
     presentation/context fields (weather, lineup, features, logos, colors) that
@@ -137,6 +169,7 @@ def _enrich_game(game: dict, core: dict) -> dict:
     return {
         **game,
         **core,
+        'lines': _market_lines({**game, **core}),
         'weather': weather,
         'lineup': lineup,
         'features': features,

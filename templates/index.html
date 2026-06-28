@@ -35,6 +35,10 @@
         .score-nums { font-size: 22px; font-weight: 900; letter-spacing: 2px; color: #fff; }
         .score-label { font-size: 9px; color: #444; margin-top: 1px; }
         .card-prob { padding: 0 12px 8px; }
+        .lines-strip { display: flex; justify-content: space-around; gap: 8px; padding: 8px 12px; margin: 0 12px 8px; background: #0e0e0e; border: 1px solid #1e1e1e; border-radius: 6px; }
+        .line-item { text-align: center; flex: 1; }
+        .line-label { font-size: 9px; font-weight: 700; color: #555; text-transform: uppercase; letter-spacing: 0.6px; }
+        .line-val { font-size: 12px; font-weight: 700; color: #d8d8d8; margin-top: 2px; white-space: nowrap; }
         .card-detail { border-top: 1px solid #1e1e1e; padding: 10px 12px; }
         .detail-meta { display: flex; justify-content: space-between; font-size: 10px; color: #666; margin-bottom: 8px; gap: 4px; flex-wrap: wrap; }
         .chart-container { height: 220px; position: relative; margin-bottom: 6px; }
@@ -189,6 +193,23 @@
             {{ r.home_name | tojson }}, {{ r.away_name | tojson }},
             {{ r.away_color | tojson }}, {{ r.home_color | tojson }});
         </script>
+
+        {% if r.lines %}
+        <div class="lines-strip" title="Model-implied fair lines (no vig), from the simulation">
+            <div class="line-item">
+                <div class="line-label">Run line</div>
+                <div class="line-val">{{ r.away_abbr }} {{ r.lines.spread_away }} · {{ r.home_abbr }} {{ r.lines.spread_home }}</div>
+            </div>
+            <div class="line-item">
+                <div class="line-label">Total</div>
+                <div class="line-val">{{ r.lines.total }}</div>
+            </div>
+            <div class="line-item">
+                <div class="line-label">Moneyline</div>
+                <div class="line-val">{{ r.away_abbr }} {{ r.lines.ml_away }} · {{ r.home_abbr }} {{ r.lines.ml_home }}</div>
+            </div>
+        </div>
+        {% endif %}
 
         <div class="card-detail">
             <div class="detail-meta">

@@ -335,3 +335,25 @@ def test_actuals_for_date_memoizes_settled_dates(mocker):
     assert a1 == a2 and 1 in a1
     assert '2026-03-15' in app._actuals_cache
     assert sched.call_count == 1               # second call didn't recompute
+
+
+def test_market_lines_from_core():
+    import src.app as app
+    core = {
+        'home_win_pct': 60.0, 'away_win_pct': 40.0,
+        'score_distribution': {'labels': [4, 5], 'home': [0, 100], 'away': [100, 0]},
+    }
+    lines = app._market_lines(core)
+    # fair American odds: 60% -> -150, 40% -> +150
+    assert lines['ml_home'] == '-150' and lines['ml_away'] == '+150'
+    # expected runs home 5, away 4 -> total 9.0, home favored by 1
+    assert lines['total'] == '9.0'
+    assert lines['spread_home'] == '-1.0' and lines['spread_away'] == '+1.0'
+
+
+def test_market_lines_pickem_handles_50_50():
+    import src.app as app
+    lines = app._market_lines({'home_win_pct': 50.0, 'away_win_pct': 50.0,
+                               'score_distribution': {'labels': [4], 'home': [10], 'away': [10]}})
+    assert lines['ml_home'] == '-100' and lines['ml_away'] == '-100'
+    assert lines['total'] == '8.0'
