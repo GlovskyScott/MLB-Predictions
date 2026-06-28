@@ -36,7 +36,8 @@
 </header>
 <div class="wrap">
     <div class="summary">
-        <div class="stat"><div class="v acc">{% if summary.total_games %}{{ summary.winner_accuracy }}%{% else %}—{% endif %}</div><div class="l">ML</div></div>
+        <div class="stat"><div class="v acc">{% if summary.total_games %}{{ summary.consensus_accuracy }}%{% else %}—{% endif %}</div><div class="l">Consensus</div></div>
+        <div class="stat"><div class="v acc">{% if summary.model_accuracy is not none %}{{ summary.model_accuracy }}%{% else %}—{% endif %}</div><div class="l">Model</div></div>
         <div class="stat"><div class="v">{{ summary.total_games }}</div><div class="l">Graded games</div></div>
         <div class="stat"><div class="v">{% if summary.avg_score_err is not none %}±{{ summary.avg_score_err }}{% else %}—{% endif %}</div><div class="l">Avg err</div></div>
         <div class="stat"><div class="v">{{ summary.days_with_games }}</div><div class="l">Days</div></div>

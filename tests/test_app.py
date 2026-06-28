@@ -552,3 +552,17 @@ def test_compare_date_grades_blended_pick(tmp_path, mocker):
     assert data['model_accuracy'] == 0.0
     sim.assert_not_called()
     app._blender_cache.clear()
+
+
+def test_index_headline_is_consensus(client, mocker):
+    sim = dict(MOCK_SIM_RESULT)
+    sim['home_win_pct'] = 58.0; sim['away_win_pct'] = 42.0
+    sim['model_home_win_pct'] = 64.0   # model-only, must NOT be surfaced
+    mocker.patch('src.app.run_daily_simulation', return_value=[sim])
+    mocker.patch('src.app._get_results_for_date', return_value=MOCK_RESULTS_DATA)
+    mocker.patch('src.app._aggregate_days', return_value={
+        'winner_accuracy': 58.0, 'consensus_accuracy': 58.0, 'model_accuracy': 55.0,
+        'total_games': 100, 'avg_score_err': 2.1, 'daily': []})
+    html = client.get('/').data.decode()
+    assert 'Consensus' in html
+    assert '>64<' not in html   # model-only number not surfaced as a standalone value

@@ -826,6 +826,8 @@ def create_app(testing: bool = False) -> Flask:
                 'total_games': s['total_games'],
                 'days_with_games': s['days_with_games'],
                 'winner_accuracy': s['winner_accuracy'],
+                'consensus_accuracy': s.get('consensus_accuracy', s['winner_accuracy']),
+                'model_accuracy': s.get('model_accuracy'),
                 'avg_score_err': s['avg_score_err'],
                 'is_current': v['version'] == current,
             })

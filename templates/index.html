@@ -1,6 +1,8 @@
 {% macro market_stats(s) -%}
-{% set ml = s.get('ml_accuracy', s.get('winner_accuracy')) %}
-<div class="summary-stat"><div class="s-label" title="Moneyline: % of games the predicted winner was correct">ML</div><div class="s-value {% if ml is not none and ml >= 55 %}good{% else %}neutral{% endif %}">{% if ml is not none %}{{ ml }}%{% else %}—{% endif %}</div></div>
+{% set ml = s.get('consensus_accuracy', s.get('ml_accuracy', s.get('winner_accuracy'))) %}
+{% set mo = s.get('model_accuracy') %}
+<div class="summary-stat"><div class="s-label" title="Consensus (market-blended) moneyline: % of headline picks correct">Consensus</div><div class="s-value {% if ml is not none and ml >= 55 %}good{% else %}neutral{% endif %}">{% if ml is not none %}{{ ml }}%{% else %}—{% endif %}</div></div>
+<div class="summary-stat"><div class="s-label" title="Model-only moneyline accuracy, for comparison">Model</div><div class="s-value neutral">{% if mo is not none %}{{ mo }}%{% else %}—{% endif %}</div></div>
 {%- endmacro %}
 {% macro pick_row(label, pick, result, na_title) -%}
 <div class="pick-row"><span class="pick-mkt">{{ label }}</span>
@@ -354,6 +356,7 @@
             </div>
         </div>
 
+        <div class="subsection-label" style="padding:0 12px;" title="Market-blended (model + de-vigged ESPN line) win probability">Consensus win probability</div>
         <div class="card-prob" id="prob-{{ r.game_id }}"></div>
         <script>
         renderWinProbBar('prob-{{ r.game_id }}',
