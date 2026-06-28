@@ -121,6 +121,8 @@ def test_index_handles_no_games(client, mocker):
 def test_retrain_redirects(client, mocker):
     mocker.patch('src.app._get_models', return_value={})
     mocker.patch('src.app._get_inning_model', return_value=None)
+    mocker.patch('src.app._current_version', return_value='v')
+    mocker.patch('src.app._backfill_results_cache')  # don't spawn real re-sim
     response = client.post('/retrain')
     assert response.status_code in (302, 200)
 
@@ -240,3 +242,26 @@ def test_compare_date_archived_version_no_generate(tmp_path, mocker):
     data = app.compare_date('2026-06-26', version='vOLD')
     assert data['games'][0]['winner_correct'] is False  # predicted away (30%<50), home won
     gp.assert_not_called()  # archived version is frozen — no generate-on-miss
+
+
+def test_retrain_forks_version_and_keeps_archive(client, tmp_path, mocker):
+    import src.app as app
+    from src import predictions as P
+    mocker.patch.object(app, '_DATA_DIR', tmp_path)
+    # live pkls present so _current_version() can hash them
+    for n in ['model_win.pkl', 'model_runs_home.pkl', 'model_runs_away.pkl', 'model_inning.pkl']:
+        (tmp_path / n).write_bytes(b'NEWMODEL')
+    # an archived prior version with a stored prediction
+    P.save_prediction(tmp_path, 'vOLD', '2026-06-26', [{'game_id': 1, 'home_win_pct': 30.0}])
+    mocker.patch('src.app._get_models', return_value={'win': 1})
+    mocker.patch('src.app._get_inning_model', return_value=None)
+    backfill = mocker.patch('src.app._backfill_results_cache')
+
+    resp = client.post('/retrain')
+    assert resp.status_code in (302, 200)
+
+    new_v = P.model_version(tmp_path)
+    versions = [v['version'] for v in P.read_versions(tmp_path)]
+    assert new_v in versions                                   # new version registered
+    assert (tmp_path / 'predictions' / 'vOLD' / '2026-06-26.json').exists()  # archive intact
+    backfill.assert_called_once()                              # re-sim kicked off

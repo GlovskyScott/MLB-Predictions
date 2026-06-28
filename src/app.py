@@ -666,11 +666,20 @@ def create_app(testing: bool = False) -> Flask:
 
     @app.route('/retrain', methods=['POST'])
     def retrain():
-        global _models_cache, _inning_model_cache
+        global _models_cache, _inning_model_cache, _simulation_cache
+        global _last_simulated_date, _results_cache
         _models_cache = {}
         _inning_model_cache = None
         _get_models(force_retrain=True)
         _get_inning_model(force_retrain=True)
+        # New pkls -> new version. Register it (archives the prior version's
+        # prediction folder by leaving it intact) and re-sim today + 90 days
+        # under the new version in the background.
+        _current_version()
+        _simulation_cache = []
+        _last_simulated_date = ""
+        _results_cache = {}
+        threading.Thread(target=_backfill_results_cache, args=(90,), daemon=True).start()
         return redirect(url_for('index'))
 
     @app.route('/explain/<int:game_id>')
