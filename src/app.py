@@ -74,6 +74,7 @@ _models_cache: dict = {}
 _inning_model_cache = None
 _results_cache: dict = {}
 _last_results_date: str = ""
+_actuals_cache: dict = {}  # settled date -> {game_id: final game}; avoids redundant live refreshes
 
 
 def _read_model_meta() -> dict:
@@ -320,20 +321,25 @@ def _is_final_game(g) -> bool:
 def _actuals_for_date(result_date: str) -> dict:
     """Return {game_id: game} for FINAL games on result_date, refreshing the
     cached schedule from the live API when it isn't fully final yet."""
+    cached = _actuals_cache.get(result_date)
+    if cached is not None:
+        return cached
     year = int(result_date[:4])
     all_games = get_season_schedule(year)
     games = [g for g in all_games if g.get('game_date') == result_date]
-    # Only hit the live API for dates recent enough that finals could still be
-    # landing. Older dates are settled in the cache — refreshing them would just
-    # add a slow live call per archived date per version (e.g. on /archive).
-    recent = result_date >= (date.today() - timedelta(days=_REFRESH_WINDOW_DAYS)).strftime('%Y-%m-%d')
-    if recent and (not games or not all(_is_final_game(g) for g in games)):
+    if not games or not all(_is_final_game(g) for g in games):
         if refresh_schedule_date(year, result_date) > 0:
             all_games = get_season_schedule(year)
             games = [g for g in all_games if g.get('game_date') == result_date]
         if not games:
             games = get_schedule(result_date)  # fallback for today/future
-    return {g['game_id']: g for g in games if _is_final_game(g)}
+    actuals = {g['game_id']: g for g in games if _is_final_game(g)}
+    # Memoize settled (older than the refresh window) dates: their finals never
+    # change, so the live refresh + join runs once per process instead of once
+    # per archived date per model version (e.g. /archive grades every version).
+    if result_date < (date.today() - timedelta(days=_REFRESH_WINDOW_DAYS)).strftime('%Y-%m-%d'):
+        _actuals_cache[result_date] = actuals
+    return actuals
 
 
 def compare_date(result_date: str, version: str = None) -> dict:
