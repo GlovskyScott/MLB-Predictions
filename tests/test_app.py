@@ -376,3 +376,28 @@ def test_market_compare_flags_edges():
     assert c['total'] == '8.0' and c['ml_home'] == '+130' and c['ml_away'] == '-150'
     assert 'OVER 1.5' in c['total_edge']          # model 9.5 vs market 8.0
     assert c['ml_edge'] == 'model likes BOS'      # market favors NYY, model favors BOS
+
+
+def test_edge_metrics_and_picks_ranking():
+    import src.app as app
+    g1 = {'home_abbr': 'BOS', 'away_abbr': 'NYY', 'home_win_pct': 55.0, 'away_win_pct': 45.0,
+          'lines': {'total_line': '9.5'}}
+    mk1 = {'total': 8.0, 'ml_home': 130, 'ml_away': -150}
+    e1 = app._edge_metrics(g1, mk1)
+    assert abs(e1['total_diff'] - 1.5) < 1e-9 and e1['fav_disagree'] is True and e1['score'] > 1.5
+    # a game with no disagreement scores lower
+    g2 = {'home_abbr': 'LAD', 'away_abbr': 'SF', 'home_win_pct': 58.0, 'away_win_pct': 42.0,
+          'lines': {'total_line': '8.0'}}
+    mk2 = {'total': 8.0, 'ml_home': -160, 'ml_away': 140}
+    e2 = app._edge_metrics(g2, mk2)
+    games = [{'edge': e1}, {'edge': e2}, {'edge': None}]
+    picks = app._picks_payload(games)
+    assert picks[0] is e1 and len(picks) == 2     # ranked, None dropped
+
+
+def test_build_picks_prompt_lists_games():
+    from src.explanations import _build_picks_prompt
+    p = _build_picks_prompt([{'away_abbr': 'NYY', 'home_abbr': 'BOS', 'model_total': 9.5,
+                              'mkt_total': 8.0, 'total_diff': 1.5, 'model_home_win': 55.0,
+                              'model_fav': 'BOS', 'mkt_fav': 'NYY', 'fav_disagree': True}])
+    assert 'NYY @ BOS' in p and 'Picks of the Day' in p and 'OVER' in p

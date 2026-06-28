@@ -26,6 +26,7 @@ from src.colors import hex_to_rgb_str as _hex_to_rgb_str, bar_color as _bar_colo
 from src.explanations import (
     _explanation_cache, _load_disk_explanations, _build_explain_prompt,
     _stream_ollama, _pregenerate_explanations,
+    _stream_picks, _pregenerate_picks, _load_disk_picks,
 )
 from src.training import (
     get_models as _get_models, get_inning_model as _get_inning_model,
@@ -257,6 +258,47 @@ def _market_compare(game: dict, mk: dict) -> dict:
     return out
 
 
+def _edge_metrics(game: dict, mk: dict) -> dict | None:
+    """Numeric model-vs-market comparison + an edge score, for ranking 'Picks'."""
+    lines = game.get('lines') or {}
+    try:
+        model_total = float(lines.get('total_line'))
+    except (TypeError, ValueError):
+        model_total = None
+    mkt_total = mk.get('total')
+    if model_total is None or mkt_total is None:
+        return None
+
+    def implied(ml):
+        if ml is None:
+            return None
+        return (-ml) / ((-ml) + 100) if ml < 0 else 100 / (ml + 100)
+
+    ih, ia = implied(mk.get('ml_home')), implied(mk.get('ml_away'))
+    mkt_home_win = ih / (ih + ia) if (ih and ia) else None        # de-vigged
+    model_home_win = game.get('home_win_pct', 50) / 100.0
+    model_fav_home = model_home_win >= 0.5
+    mkt_fav_home = mkt_home_win >= 0.5 if mkt_home_win is not None else model_fav_home
+    ml_prob_edge = abs(model_home_win - mkt_home_win) if mkt_home_win is not None else 0.0
+    total_diff = model_total - mkt_total
+    return {
+        'away_abbr': game.get('away_abbr'), 'home_abbr': game.get('home_abbr'),
+        'model_total': model_total, 'mkt_total': mkt_total, 'total_diff': total_diff,
+        'model_home_win': model_home_win * 100,
+        'model_fav': game.get('home_abbr') if model_fav_home else game.get('away_abbr'),
+        'mkt_fav': game.get('home_abbr') if mkt_fav_home else game.get('away_abbr'),
+        'fav_disagree': model_fav_home != mkt_fav_home,
+        'score': abs(total_diff) + 3.0 * ml_prob_edge + (1.0 if model_fav_home != mkt_fav_home else 0.0),
+    }
+
+
+def _picks_payload(games: list, top: int = 4) -> list:
+    """The day's strongest model-vs-market edges, ranked, for the Picks summary."""
+    edges = [g['edge'] for g in games if g.get('edge')]
+    edges.sort(key=lambda e: e['score'], reverse=True)
+    return edges[:top]
+
+
 def run_daily_simulation(sim_date: str = None) -> list[dict]:
     if sim_date is None:
         sim_date = date.today().strftime('%Y-%m-%d')
@@ -269,6 +311,7 @@ def run_daily_simulation(sim_date: str = None) -> list[dict]:
             g = _enrich_game(game, cores.get(game['game_id'], {}))
             mk = market.get(market_key(g.get('away_name', ''), g.get('home_name', '')))
             g['market'] = _market_compare(g, mk) if mk else None
+            g['edge'] = _edge_metrics(g, mk) if mk else None
             results.append(g)
         except Exception as e:
             results.append({**game, 'error': str(e)})
@@ -522,6 +565,9 @@ def create_app(testing: bool = False) -> Flask:
             _last_simulated_date = today
             _load_disk_explanations(today)
             threading.Thread(target=_pregenerate_explanations, args=(_simulation_cache, today), daemon=True).start()
+            edges = _picks_payload(_simulation_cache)
+            if edges:
+                threading.Thread(target=_pregenerate_picks, args=(edges, today), daemon=True).start()
 
         if not _results_cache or _last_results_date != yesterday:
             try:
@@ -542,6 +588,7 @@ def create_app(testing: bool = False) -> Flask:
                                yesterday=_results_cache, yesterday_date=yesterday,
                                last_7=last_7, last_90=last_90,
                                model_name=model_name,
+                               has_picks=bool(_picks_payload(_simulation_cache)),
                                model_n_games=meta.get('n_games', '?'),
                                model_years=meta.get('training_years', []))
 
@@ -600,6 +647,19 @@ def create_app(testing: bool = False) -> Flask:
         summary = _version_summary(version)
         return render_template('archive_version.html', version=version, meta=meta,
                                summary=summary, is_current=(version == _current_version()))
+
+    @app.route('/picks')
+    def picks():
+        today = date.today().strftime('%Y-%m-%d')
+        edges = _picks_payload(_simulation_cache)
+        headers = {'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'}
+        if not edges:
+            def _none():
+                yield f"data: {json.dumps({'text': 'No standout edges vs the market today.'})}\n\n"
+                yield "data: [DONE]\n\n"
+            return Response(stream_with_context(_none()), mimetype='text/event-stream', headers=headers)
+        return Response(stream_with_context(_stream_picks(edges, today)),
+                        mimetype='text/event-stream', headers=headers)
 
     @app.route('/explain/<int:game_id>')
     def explain(game_id: int):

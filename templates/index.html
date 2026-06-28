@@ -20,6 +20,11 @@
         /* ── Two-column layout ── */
         .dashboard { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; max-width: 1500px; margin: 0 auto; padding: 16px; align-items: start; }
         .col-header { font-size: 11px; font-weight: 700; color: #555; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid #1e1e1e; }
+        .picks-panel { max-width: 1500px; margin: 14px auto 0; padding: 13px 18px; background: linear-gradient(135deg, #13212f 0%, #141414 60%); border: 1px solid #20405a; border-radius: 10px; }
+        .picks-title { font-size: 13px; font-weight: 800; color: #eaf2ff; text-transform: uppercase; letter-spacing: 0.06em; }
+        .picks-sub { font-size: 10px; font-weight: 600; color: #6ea3d6; text-transform: none; letter-spacing: 0; margin-left: 6px; }
+        .picks-body { font-size: 13px; line-height: 1.65; color: #cdd9e6; white-space: pre-wrap; margin-top: 8px; }
+        .picks-loading { color: #5a7a96; font-style: italic; }
 
         /* ── Game cards ── */
         .game-card { background: #141414; border: 1px solid #222; border-radius: 10px; overflow: hidden; margin-bottom: 12px; }
@@ -38,12 +43,20 @@
         .odds-block { margin: 0 12px 8px; background: #0e0e0e; border: 1px solid #1e1e1e; border-radius: 6px; padding: 4px 8px; }
         .odds-table { width: 100%; border-collapse: collapse; font-size: 11px; }
         .odds-table th { font-size: 9px; font-weight: 700; color: #555; text-transform: uppercase; letter-spacing: 0.5px; text-align: left; padding: 3px 4px; }
-        .odds-table td { padding: 3px 4px; color: #d8d8d8; white-space: nowrap; }
-        .odds-team { font-weight: 800; color: #fff; }
-        .odds-mkt td { color: #888; border-top: 1px solid #1c1c1c; }
-        .odds-mkt .odds-team { color: #888; font-weight: 700; }
-        .odds-edge { margin-top: 4px; display: flex; gap: 6px; flex-wrap: wrap; }
-        .edge-badge { font-size: 10px; font-weight: 700; color: #5dd47e; background: #14331f; border: 1px solid #1f5132; border-radius: 4px; padding: 1px 6px; }
+        .odds-table td { padding: 3px 5px; white-space: nowrap; border-left: 2px solid transparent; }
+        .odds-team { font-weight: 800; }
+        /* Model rows = blue, ESPN row = amber, so the two sources read at a glance */
+        .row-model td { color: #aacdff; }
+        .row-model td:first-child { border-left-color: #4a86e0; }
+        .row-model .odds-team { color: #eaf2ff; }
+        .row-espn td { color: #e6ad62; border-top: 1px solid #1c1c1c; }
+        .row-espn td:first-child { border-left-color: #e6ad62; }
+        .row-espn .odds-team { color: #e6ad62; }
+        .odds-legend { display: flex; gap: 12px; margin-top: 4px; font-size: 9px; text-transform: uppercase; letter-spacing: .04em; }
+        .okey { display: inline-flex; align-items: center; }
+        .okey::before { content: ''; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; }
+        .okey-model { color: #7fb0e8; } .okey-model::before { background: #4a86e0; }
+        .okey-espn { color: #e6ad62; } .okey-espn::before { background: #e6ad62; }
         .card-detail { border-top: 1px solid #1e1e1e; padding: 10px 12px; }
         .detail-meta { display: flex; justify-content: space-between; font-size: 10px; color: #666; margin-bottom: 8px; gap: 4px; flex-wrap: wrap; }
         .chart-container { height: 220px; position: relative; margin-bottom: 6px; }
@@ -139,6 +152,13 @@
     </div>
 </header>
 
+{% if has_picks %}
+<div class="picks-panel">
+    <div class="picks-title">🎯 Picks of the Day <span class="picks-sub">where the model disagrees with the market</span></div>
+    <div class="picks-body" id="picks-box"><span class="picks-loading">⏳ Analyzing today's edges…</span></div>
+</div>
+{% endif %}
+
 <div class="dashboard">
 
 <!-- ══════════════ LEFT: TODAY ══════════════ -->
@@ -202,34 +222,29 @@
         {% if r.lines %}
         <div class="odds-block">
             <table class="odds-table">
-                <tr class="odds-head"><th></th><th>Run line</th><th>Total</th><th>ML</th></tr>
-                <tr>
+                <tr class="odds-head"><th></th><th>Run line</th><th>Total</th><th>Moneyline</th></tr>
+                <tr class="row-model">
                     <td class="odds-team">{{ r.away_abbr }}</td>
                     <td>{{ r.lines.spread_away }}</td>
                     <td>O {{ r.lines.total_line }} {{ r.lines.total_over }}</td>
                     <td>{{ r.lines.ml_away }}</td>
                 </tr>
-                <tr>
+                <tr class="row-model">
                     <td class="odds-team">{{ r.home_abbr }}</td>
                     <td>{{ r.lines.spread_home }}</td>
                     <td>U {{ r.lines.total_line }} {{ r.lines.total_under }}</td>
                     <td>{{ r.lines.ml_home }}</td>
                 </tr>
                 {% if r.market %}
-                <tr class="odds-mkt" title="Average sportsbook line ({{ r.market.n_books }} book{{ 's' if r.market.n_books != 1 }}, via ESPN)">
-                    <td class="odds-team">Mkt</td>
+                <tr class="row-espn" title="Average sportsbook line ({{ r.market.n_books }} book{{ 's' if r.market.n_books != 1 }})">
+                    <td class="odds-team">ESPN</td>
                     <td>±1.5</td>
                     <td>{{ r.market.total }}</td>
                     <td>{{ r.away_abbr }} {{ r.market.ml_away }} · {{ r.home_abbr }} {{ r.market.ml_home }}</td>
                 </tr>
                 {% endif %}
             </table>
-            {% if r.market and (r.market.total_edge or r.market.ml_edge) %}
-            <div class="odds-edge">
-                {% if r.market.total_edge %}<span class="edge-badge">▲ {{ r.market.total_edge }}</span>{% endif %}
-                {% if r.market.ml_edge %}<span class="edge-badge">★ {{ r.market.ml_edge }}</span>{% endif %}
-            </div>
-            {% endif %}
+            <div class="odds-legend"><span class="okey okey-model">Model</span>{% if r.market %}<span class="okey okey-espn">ESPN avg</span>{% endif %}</div>
         </div>
         {% endif %}
 
@@ -447,6 +462,8 @@ document.addEventListener('DOMContentLoaded', function () {
             d.home, d.away, d.labels, d.homeName, d.awayName, d.homeColor, d.awayColor, d.nSims);
     });
 
+    {% if has_picks %}streamPicks();{% endif %}
+
     const _autoGameIds = [{% for r in results %}{% if not r.get('error') %}{{ r.game_id }},{% endif %}{% endfor %}];
     autoExplainAll(_autoGameIds);
 
@@ -491,6 +508,28 @@ function streamExplanation(gameId, onDone) {
         evtSource.close();
         if (!hasText) box.textContent = '⚠ Could not reach Ollama — make sure it is running.';
         if (onDone) onDone();
+    };
+}
+
+function streamPicks() {
+    const box = document.getElementById('picks-box');
+    if (!box) return;
+    let hasText = false;
+    const es = new EventSource('/picks');
+    es.onmessage = function (e) {
+        if (e.data === '[DONE]') { es.close(); return; }
+        try {
+            const chunk = JSON.parse(e.data);
+            if (chunk.error) { es.close(); }
+            else if (chunk.text) {
+                if (!hasText) { box.textContent = ''; hasText = true; }
+                box.textContent += chunk.text;
+            }
+        } catch (_) {}
+    };
+    es.onerror = function () {
+        es.close();
+        if (!hasText) box.innerHTML = '<span class="picks-loading">⚠ Could not reach Ollama — start it to get daily picks.</span>';
     };
 }
 
