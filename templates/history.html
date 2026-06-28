@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Historical data — MLB</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a0a; color: #e8e8e8; }
+        header { display: flex; align-items: center; justify-content: space-between; padding: 14px 22px; border-bottom: 1px solid #1a1a1a; position: sticky; top: 0; background: #0a0a0a; z-index: 2; }
+        a { color: #4a9eff; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .wrap { padding: 20px; max-width: 1000px; margin: 0 auto; }
+        .summary { color: #9aa0aa; font-size: 12.5px; margin-bottom: 16px; }
+        .summary b { color: #5dd47e; }
+        table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        thead th { background: #14141a; padding: 8px 10px; color: #777; text-align: left; white-space: nowrap; border-bottom: 1px solid #222; position: sticky; top: 49px; }
+        tbody td { padding: 8px 10px; border-top: 1px solid #15151a; vertical-align: middle; white-space: nowrap; }
+        tbody tr:hover { background: #101015; }
+        .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+        .muted { color: #6b7079; }
+        .win { color: #5dd47e; font-weight: 700; }
+        .loss { color: #e0667a; font-weight: 700; }
+        .pick { font-weight: 700; color: #eef0f4; }
+        .num { font-variant-numeric: tabular-nums; }
+        .r { text-align: right; }
+    </style>
+</head>
+<body>
+<header>
+    <div style="font-size:17px;font-weight:700;">Historical data</div>
+    <a href="/">← Back to dashboard</a>
+</header>
+<div class="wrap">
+    <div class="summary">
+        {{ totals.n }} graded games · model pick correct <b>{{ totals.accuracy }}%</b>
+        · closing line on {{ totals.with_close }} ({{ (100 * totals.with_close // totals.n) if totals.n else 0 }}%)
+        · version <span class="mono muted">{{ version }}</span>
+    </div>
+    <table>
+        <thead>
+            <tr>
+                <th>Date</th><th>Away</th><th>Home</th><th class="r">Final</th>
+                <th>Pick</th><th class="r">Win%</th><th></th>
+                <th class="r">Close A</th><th class="r">Close H</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for day in days %}
+          {% for g in day.games %}
+            <tr>
+                <td class="mono muted">{{ day.result_date }}</td>
+                <td>{{ g.away_name }}</td>
+                <td>{{ g.home_name }}</td>
+                <td class="r num mono">{{ g.actual_away_score }}–{{ g.actual_home_score }}</td>
+                <td class="pick">{{ g.ml_pick }}</td>
+                <td class="r num">{{ g.home_win_pct | round(0) | int if g.predicted_home_won else (100 - g.home_win_pct) | round(0) | int }}%</td>
+                <td>{% if g.winner_correct %}<span class="win">✓</span>{% else %}<span class="loss">✗</span>{% endif %}</td>
+                <td class="r mono {{ 'muted' if not g.close_away }}">{{ g.close_away or '—' }}</td>
+                <td class="r mono {{ 'muted' if not g.close_home }}">{{ g.close_home or '—' }}</td>
+            </tr>
+          {% endfor %}
+        {% endfor %}
+        </tbody>
+    </table>
+    {% if not days %}<p class="muted" style="margin-top:20px;">No graded games yet.</p>{% endif %}
+</div>
+</body>
+</html>

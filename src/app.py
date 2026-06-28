@@ -975,6 +975,29 @@ def create_app(testing: bool = False) -> Flask:
         return render_template('archive_version.html', version=version, meta=meta,
                                summary=summary, is_current=(version == _current_version()))
 
+    @app.route('/history')
+    def history():
+        """Every past game with a stored prediction: final score, the model's
+        (Consensus) pick graded against the result, and the real closing line."""
+        version = _current_version()
+        days, totals = [], {'n': 0, 'correct': 0, 'with_close': 0}
+        for d in sorted(_pred.list_dates(_DATA_DIR, version), reverse=True):
+            day = compare_date(d, version)
+            games = day.get('games') or []
+            if not games:
+                continue
+            closing = _pred.load_closing_odds(_DATA_DIR, d)
+            for g in games:
+                c = closing.get(str(g.get('game_id')))
+                g['close_home'] = _fmt_american(c.get('ml_home')) if c else None
+                g['close_away'] = _fmt_american(c.get('ml_away')) if c else None
+                totals['n'] += 1
+                totals['correct'] += 1 if g.get('winner_correct') else 0
+                totals['with_close'] += 1 if c else 0
+            days.append(day)
+        totals['accuracy'] = round(100 * totals['correct'] / totals['n'], 1) if totals['n'] else 0
+        return render_template('history.html', days=days, totals=totals, version=version)
+
     @app.route('/chat', methods=['POST'])
     def chat():
         data = request.get_json(silent=True) or {}

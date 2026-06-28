@@ -344,6 +344,35 @@ def test_archive_pages_render(client, tmp_path, mocker):
     assert b'2026-06-26' in r2.data
 
 
+def test_history_page_shows_results_and_closing_line(client, tmp_path, mocker):
+    import src.app as app
+    from src import predictions as P
+    mocker.patch.object(app, '_DATA_DIR', tmp_path)
+    mocker.patch.object(app, '_current_version', return_value='vCUR')
+    P.append_version(tmp_path, {'version': 'vCUR', 'created_at': '2026-06-27T00:00:00+00:00',
+                                'feature_version': 5, 'n_games': 5921})
+    P.save_prediction(tmp_path, 'vCUR', '2026-06-26', [{
+        'game_id': 1, 'game_date': '2026-06-26', 'home_id': 147, 'away_id': 111,
+        'home_name': 'Yankees', 'away_name': 'Red Sox', 'home_win_pct': 60.0,
+        'median_home_score': 5.0, 'median_away_score': 3.0, 'predicted_score': '5-3'}])
+    P.save_closing_odds(tmp_path, '2026-06-26',
+                        {1: {'ml_home': -150, 'ml_away': 130, 'book': 'pinnacle'}})
+    mocker.patch('src.app.get_season_schedule', return_value=[{
+        'game_id': 1, 'game_date': '2026-06-26', 'status': 'Final',
+        'home_score': 6, 'away_score': 2, 'home_id': 147, 'away_id': 111}])
+    mocker.patch('src.app.refresh_schedule_date', return_value=0)
+    mocker.patch('src.app.get_team_meta', return_value={
+        'logo_url': '', 'primary': '#111', 'secondary': '#222', 'abbr': 'NYY'})
+
+    r = client.get('/history')
+    assert r.status_code == 200
+    html = r.data.decode()
+    assert '2026-06-26' in html          # date
+    assert '2–' in html or '2-' in html  # final score (away 2)
+    assert 'NYY' in html                 # the model's pick (home favored 60%)
+    assert '-150' in html                # the real closing line
+
+
 def test_archive_unknown_version_404(client, tmp_path, mocker):
     import src.app as app
     mocker.patch.object(app, '_DATA_DIR', tmp_path)
