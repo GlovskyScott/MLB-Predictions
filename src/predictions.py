@@ -89,6 +89,59 @@ def save_market_odds(data_dir, date: str, odds: dict) -> None:
         tmp.replace(d / f'{date}.json')
 
 
+# ---- closing-odds snapshot store -------------------------------------------
+# True closing lines captured near first pitch (The Odds API, via
+# fetcher.get_closing_moneylines). Unlike the write-once opener store above this
+# UPSERTS — the closing line is the *latest* snapshot before a game starts, so a
+# capture run near game time overwrites the earlier one. Accumulates forward; the
+# real-closing-line backtest reads it when present.
+
+_closing_odds_lock = threading.Lock()
+
+
+def _closing_odds_dir(data_dir) -> Path:
+    return Path(data_dir) / 'market_closing'
+
+
+def load_closing_odds(data_dir, date: str) -> dict:
+    """Return {game_id(str): {ml_home, ml_away, book, captured_at}} for date, or {}."""
+    f = _closing_odds_dir(data_dir) / f'{date}.json'
+    if not f.exists():
+        return {}
+    try:
+        return json.loads(f.read_text())
+    except Exception:
+        return {}
+
+
+def save_closing_odds(data_dir, date: str, odds: dict) -> None:
+    """Upsert per-game closing snapshots for date (latest capture wins).
+
+    ``odds`` maps game_id -> {'ml_home', 'ml_away', 'book'(optional)}. Games
+    missing either price are skipped. Re-running closer to first pitch overwrites
+    a game's prior snapshot with the fresher (more 'closing') line.
+    """
+    import datetime
+    with _closing_odds_lock:
+        existing = load_closing_odds(data_dir, date)
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        changed = False
+        for gid, line in odds.items():
+            mlh, mla = (line or {}).get('ml_home'), (line or {}).get('ml_away')
+            if mlh is None or mla is None:
+                continue
+            existing[str(gid)] = {'ml_home': float(mlh), 'ml_away': float(mla),
+                                  'book': (line or {}).get('book'), 'captured_at': now}
+            changed = True
+        if not changed:
+            return
+        d = _closing_odds_dir(data_dir)
+        d.mkdir(parents=True, exist_ok=True)
+        tmp = d / f'{date}.json.tmp'
+        tmp.write_text(json.dumps(existing, default=str))
+        tmp.replace(d / f'{date}.json')
+
+
 def model_version(data_dir):
     """Return the 12-hex version id for the current model pkls, or None if any
     pkl is missing. Deterministic: same bytes -> same id; any change -> new id.

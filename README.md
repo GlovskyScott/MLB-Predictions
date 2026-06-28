@@ -177,6 +177,21 @@ waitress-serve --port 8000 --call src.app:create_app
 
 Note: in-process state (today's predictions, rollup caches, model objects) is **per-process**, so run a **single worker** — multiple gunicorn/waitress workers would each hold separate caches, and `/retrain` would only refresh the worker that handled it. (Background prediction generation is shared via the on-disk store, so a single worker is sufficient.)
 
+### Closing-line odds (already backfilled — **no API key needed**)
+
+The **true closing moneylines** used to backtest whether the model beats the market (the *CLV backtest* below) are **already captured** for 2024–2026 and ship in `data/market_closing/` — restored from the **`data-cache`** release at startup like the rest of `data/`. So out of the box, **no API key is required**:
+
+```bash
+python -m scripts.clv_backtest --closing      # grades the model vs the real closes — no key
+```
+
+You only need a [The Odds API](https://the-odds-api.com) key to **extend** that data — and even then the key is read from the `ODDS_API_KEY` **environment variable**, never committed (keep it in a file outside the checkout, e.g. `printf 'export ODDS_API_KEY="…"\n' > ~/.config/oddsapi.env && chmod 600 ~/.config/oddsapi.env && source ~/.config/oddsapi.env`):
+
+- **Keep it current going forward — free tier, no card:** cron `python -m scripts.capture_closing_odds` near first pitch to append new real closes to `data/market_closing/`.
+- **Backfill a different/older range — one paid month, then cancel:** `python -m scripts.backfill_closing_odds --start <date> --end <date>` — credit-optimized (h2h/us only, regular-season, one snapshot per start-time cluster ≤4/day, resumable, hard credit cap, free `--estimate` dry-run); ~2.5 seasons fits the 20k-credit/$30 tier.
+
+Without a key these capture tools are simply no-ops; the bundled closing data and everything else still work.
+
 ---
 
 ## Dashboard (`/`)
