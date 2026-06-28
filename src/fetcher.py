@@ -22,6 +22,10 @@ def bootstrap_model_cache(repo: str = "jackleh/MLB-Predictions") -> None:
     """Download model pkl files from the latest release into data/ if missing.
 
     Safe to call repeatedly — no-op if all pkls already exist.
+
+    Security note: the pkls are unpickled (model.load_models -> joblib.load),
+    which executes code on load. Only ever point this at the project's own
+    trusted releases — never a third-party `repo`.
     """
     if all((_DATA_DIR / p).exists() for p in _MODEL_PKLS):
         return
@@ -60,7 +64,7 @@ def bootstrap_data_cache(repo: str = "jackleh/MLB-Predictions") -> None:
             )
             asset_path = Path(tmp) / _DATA_RELEASE_ASSET
             with tarfile.open(asset_path, "r:gz") as tf:
-                tf.extractall(_DATA_DIR)
+                tf.extractall(_DATA_DIR, filter="data")  # block path traversal
         print("Data cache restored.")
     except Exception as e:
         print(f"Could not download data cache ({e}). Will fetch fresh data instead.")
@@ -87,7 +91,7 @@ def bootstrap_predictions_cache(repo: str = "jackleh/MLB-Predictions") -> None:
             )
             asset_path = Path(tmp) / _PREDICTIONS_RELEASE_ASSET
             with tarfile.open(asset_path, "r:gz") as tf:
-                tf.extractall(_DATA_DIR / "predictions")
+                tf.extractall(_DATA_DIR / "predictions", filter="data")  # block path traversal
         print("Prediction archive restored.")
     except Exception as e:
         print(f"Could not download prediction archive ({e}). Predictions will be generated fresh.")
@@ -102,6 +106,12 @@ _weather_cache: dict = {}  # (date, lat, lon) → weather dict, in-memory layer
 _LINESCORE_CACHE_FILE = _DATA_DIR / "linescore_cache.csv"
 _linescore_cache: dict = {}  # game_pk → {home: [9 ints], away: [9 ints]}
 _linescore_cache_lock = threading.Lock()
+
+# Guards the lazy "load whole disk cache into memory" routines below. The
+# backfill / inning-training run 6–20 parallel workers that would otherwise race
+# the check-then-load and each parse the CSV. (Per-key dict writes elsewhere are
+# single ops and rely on the GIL for atomicity.)
+_cache_load_lock = threading.Lock()
 
 _season_schedule_memory: dict = {}  # year → list[dict], prevents repeated CSV reads
 
@@ -138,6 +148,13 @@ def _load_weather_cache() -> None:
     global _weather_cache
     if _weather_cache or not _WEATHER_CACHE_FILE.exists():
         return
+    with _cache_load_lock:
+        if _weather_cache:  # another thread loaded it while we waited
+            return
+        _load_weather_cache_locked()
+
+
+def _load_weather_cache_locked() -> None:
     df = pd.read_csv(_WEATHER_CACHE_FILE)
     for _, row in df.iterrows():
         # Skip entries missing humidity — they were cached before this field was added;
@@ -357,16 +374,18 @@ def get_team_recent_runs(team_id: int, game_date: str, year: int, n_games: int =
             key=lambda x: x['game_date'], reverse=True,
         )[:n_games]
         if not recent:
-            return 4.5
-        runs = [
-            float(g['home_score'] if g.get('home_id') == team_id else g['away_score'])
-            for g in recent
-        ]
-        result = round(sum(runs) / len(runs), 3)
-        _recent_runs_cache[cache_key] = result
-        return result
+            result = 4.5
+        else:
+            runs = [
+                float(g['home_score'] if g.get('home_id') == team_id else g['away_score'])
+                for g in recent
+            ]
+            result = round(sum(runs) / len(runs), 3)
     except Exception:
-        return 4.5
+        result = 4.5
+    # Cache every outcome (incl. the default) so repeated lookups don't recompute.
+    _recent_runs_cache[cache_key] = result
+    return result
 
 
 def get_bullpen_stress_l3(team_id: int, game_date: str, year: int,
@@ -596,6 +615,13 @@ def _load_linescore_cache() -> None:
     global _linescore_cache
     if _linescore_cache or not _LINESCORE_CACHE_FILE.exists():
         return
+    with _cache_load_lock:
+        if _linescore_cache:  # another thread loaded it while we waited
+            return
+        _load_linescore_cache_locked()
+
+
+def _load_linescore_cache_locked() -> None:
     try:
         df = pd.read_csv(_LINESCORE_CACHE_FILE)
         for _, row in df.iterrows():

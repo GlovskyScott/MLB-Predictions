@@ -61,3 +61,20 @@ def test_simulate_game_is_reproducible():
     r1 = simulate_game(make_prediction(), n_simulations=100, seed=99)
     r2 = simulate_game(make_prediction(), n_simulations=100, seed=99)
     assert r1['home_win_pct'] == r2['home_win_pct']
+
+def test_predicted_score_is_never_a_tie():
+    # The headline predicted score must be a real (decided) game, never N-N.
+    for seed in range(20):
+        s = simulate_game(make_prediction(), n_simulations=200, seed=seed)['predicted_score']
+        a, h = s.split('-')
+        assert a != h, f"predicted_score was a tie: {s} (seed {seed})"
+
+def test_simulate_game_output_covers_prediction_fields():
+    # extract_core silently drops keys it can't find; guard against drift between
+    # the simulator output and the persisted PREDICTION_FIELDS.
+    from src.predictions import PREDICTION_FIELDS
+    out = simulate_game(make_prediction(), n_simulations=100, seed=1)
+    game_identity = {'game_id', 'game_date', 'home_id', 'away_id', 'home_name',
+                     'away_name', 'venue_id', 'venue_name'}  # supplied by the schedule, not the sim
+    sim_fields = set(PREDICTION_FIELDS) - game_identity
+    assert sim_fields.issubset(out.keys()), sim_fields - set(out.keys())

@@ -61,8 +61,11 @@ A separate XGBoost classifier predicts P(team scores ≥ 1 run) for each of the 
 ```
 MLB-Predictions/
 ├── src/
-│   ├── app.py          # Flask app: routes, get_prediction/compare_date, backfill, retrain, AI explanations
+│   ├── app.py          # Flask app: routes, get_prediction/compare_date, backfill
 │   ├── predictions.py  # Versioned prediction store: model_version(), registry, load/save, next_build()
+│   ├── training.py     # Model training orchestration + model caches (get_models, needs_retrain, …)
+│   ├── explanations.py # Ollama AI explanations (prompt, SSE stream, pre-generator)
+│   ├── colors.py       # Team-color helpers for the dark UI
 │   ├── features.py     # Feature engineering: build_game_features(), FEATURE_COLUMNS, FEATURE_VERSION
 │   ├── fetcher.py      # All external data + caches: MLB Stats API, pybaseball, Open-Meteo, bootstrap_*()
 │   ├── model.py        # Train / load / predict for the XGBoost models
@@ -149,6 +152,17 @@ On macOS, AirPlay Receiver squats on port 5000 — use `--port 5001` if needed.
 4. Starts a daemon thread (`_backfill_results_cache`) that generates-and-freezes predictions for the trailing 90 days under the current model version, using 6 workers.
 
 The first page load runs today's live simulation (~10 s); subsequent loads serve the frozen prediction instantly.
+
+### Deployment
+
+`flask run` uses the Werkzeug **development server** — single-threaded, so overlapping requests queue (a slow `/archive` will block other requests). It's fine for local use but **not for production**. For a real deployment use a WSGI server, e.g.:
+
+```bash
+pip install waitress
+waitress-serve --port 8000 --call src.app:create_app
+```
+
+Note: in-process state (today's predictions, rollup caches, model objects) is **per-process**, so run a **single worker** — multiple gunicorn/waitress workers would each hold separate caches, and `/retrain` would only refresh the worker that handled it. (Background prediction generation is shared via the on-disk store, so a single worker is sufficient.)
 
 ---
 

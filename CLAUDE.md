@@ -54,8 +54,11 @@ GET /archive ──► _version_summary(v) for each registered version  (join st
 
 | File | Responsibility | Key functions |
 |---|---|---|
-| `app.py` | Flask app, routes, orchestration, caches | `create_app`, `get_prediction`, `_simulate_core_for_date`, `run_daily_simulation`, `_enrich_game`, `compare_date`, `_actuals_for_date`, `_version_summary`, `_current_version`, `_backfill_results_cache`, `_get_models`/`_get_inning_model`, AI-explanation streaming |
-| `predictions.py` | The versioned store (pure, filesystem-only) | `model_version`, `read_versions`/`append_version`, `next_build`, `load_prediction`/`save_prediction`, `list_dates`, `extract_core`, `PREDICTION_FIELDS` |
+| `app.py` | Flask app, routes, prediction/grade orchestration, caches | `create_app`, `get_prediction`, `_simulate_core_for_date`, `run_daily_simulation`, `_enrich_game`, `compare_date`, `_actuals_for_date`, `_version_summary`, `_current_version`, `_backfill_results_cache` |
+| `predictions.py` | The versioned store (pure, filesystem-only) | `model_version` (memoized on pkl signature), `read_versions`/`append_version` (locked), `next_build`, `load_prediction`/`save_prediction`, `list_dates`, `extract_core`, `PREDICTION_FIELDS` |
+| `training.py` | Model training orchestration + model caches | `get_models`/`get_inning_model`, `build_training_df`/`build_inning_training_df`, `read_model_meta`/`write_model_meta`, `needs_retrain`, `reset_model_caches` (retrain calls this — don't poke the caches directly) |
+| `explanations.py` | Ollama AI explanations (prompt/stream/pregenerate + cache) | `_stream_ollama`, `_build_explain_prompt`, `_pregenerate_explanations`, `_load_disk_explanations`, `_explanation_cache` |
+| `colors.py` | Team-color helpers (pure) | `hex_to_rgb_str`, `bar_color` |
 | `features.py` | Feature engineering | `build_game_features`, `build_inning_feature_row`, `FEATURE_COLUMNS`, `FEATURE_VERSION` |
 | `fetcher.py` | All external data + disk caches | `bootstrap_{model,data,predictions}_cache`, `get_schedule`, `get_season_schedule`, `refresh_schedule_date`, `get_*_stats`, `get_weather_*`, splits/handedness/rest/recent-runs/bullpen helpers |
 | `model.py` | XGBoost train/load/predict | `train_models`, `load_models`, `predict_game`, `train_inning_model`, `predict_inning_probs`, `models_exist` |

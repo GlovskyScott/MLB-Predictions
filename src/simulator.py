@@ -99,6 +99,9 @@ def simulate_game(prediction: dict, n_simulations: int = 1000, seed: int = None)
             'away': away_hist,
             'labels': list(range(max_runs + 1)),
         },
-        'predicted_score': f"{round(median_home)}-{round(median_away)}",
+        # Use the modal (most-common) outcome — it's the documented "most likely
+        # score" and is tie-free (extra innings resolve ties), unlike the median
+        # which can land on an impossible tie like 4-4.
+        'predicted_score': f"{modal_home}-{modal_away}",
         'n_simulations': n_simulations,
     }

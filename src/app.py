@@ -2,7 +2,7 @@ import json
 import threading
 import requests as _requests
 import pandas as pd
-from flask import Flask, render_template, redirect, url_for, request, Response, stream_with_context
+from flask import Flask, render_template, redirect, url_for, request, Response, stream_with_context, abort
 from datetime import date, timedelta
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -21,177 +21,27 @@ from src.simulator import simulate_game
 from src.stadiums import get_stadium
 from src.teams import get_team_meta
 from src import predictions as _pred
+from src.colors import hex_to_rgb_str as _hex_to_rgb_str, bar_color as _bar_color
+from src.explanations import (
+    _explanation_cache, _load_disk_explanations, _build_explain_prompt,
+    _stream_ollama, _pregenerate_explanations,
+)
+from src.training import (
+    get_models as _get_models, get_inning_model as _get_inning_model,
+    read_model_meta as _read_model_meta, reset_model_caches as _reset_model_caches,
+)
 from datetime import datetime, timezone
 
 _DATA_DIR = Path(__file__).parent.parent / "data"
 
-
-def _hex_to_rgb_str(hex_color: str) -> str:
-    h = hex_color.lstrip('#')
-    return f"{int(h[0:2],16)},{int(h[2:4],16)},{int(h[4:6],16)}"
-
-
-def _bar_color(primary: str, secondary: str) -> str:
-    """Return a legible team color for dark backgrounds.
-    Picks the brighter of primary/secondary, then blends toward white until
-    the result meets the minimum readable luminance.
-    """
-    MIN_LUM = 0.28
-
-    def _lum(hex_color: str) -> float:
-        h = hex_color.lstrip('#')
-        r, g, b = int(h[0:2], 16) / 255, int(h[2:4], 16) / 255, int(h[4:6], 16) / 255
-        return 0.299 * r + 0.587 * g + 0.114 * b
-
-    color = primary if _lum(primary) >= _lum(secondary) else secondary
-
-    if _lum(color) >= MIN_LUM:
-        return color
-
-    # Blend toward white in 5% steps until readable
-    h = color.lstrip('#')
-    r0, g0, b0 = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
-    for step in range(5, 100, 5):
-        t = step / 100.0
-        r = min(int(r0 + (255 - r0) * t), 255)
-        g = min(int(g0 + (255 - g0) * t), 255)
-        b = min(int(b0 + (255 - b0) * t), 255)
-        if 0.299 * (r / 255) + 0.587 * (g / 255) + 0.114 * (b / 255) >= MIN_LUM:
-            return f"#{r:02x}{g:02x}{b:02x}"
-
-    return '#888888'
-
-
-_MODEL_META_FILE = _DATA_DIR / "model_meta.json"
-_EXPLANATIONS_DIR = _DATA_DIR / "explanations"
-_TRAINING_YEARS = [2024, 2025, 2026]
 N_SIMULATIONS = 1000  # fixed sim count for the prediction of record (live + backfill)
 _REFRESH_WINDOW_DAYS = 4  # only re-fetch finals from the live API for dates this recent
 
 _simulation_cache: list[dict] = []
 _last_simulated_date: str = ""
-_models_cache: dict = {}
-_inning_model_cache = None
 _results_cache: dict = {}
 _last_results_date: str = ""
 _actuals_cache: dict = {}  # settled date -> {game_id: final game}; avoids redundant live refreshes
-
-
-def _read_model_meta() -> dict:
-    if _MODEL_META_FILE.exists():
-        return json.loads(_MODEL_META_FILE.read_text())
-    return {}
-
-
-def _write_model_meta(n_games: int) -> None:
-    _MODEL_META_FILE.write_text(json.dumps({
-        'training_years': _TRAINING_YEARS,
-        'n_games': n_games,
-        'feature_version': FEATURE_VERSION,
-    }))
-
-
-def _needs_retrain() -> bool:
-    if not models_exist():
-        return True
-    meta = _read_model_meta()
-    if meta.get('training_years') != _TRAINING_YEARS:
-        return True
-    if meta.get('feature_version') != FEATURE_VERSION:
-        return True
-    return False
-
-
-def _build_training_df(years: list[int] = None) -> pd.DataFrame:
-    if years is None:
-        years = _TRAINING_YEARS
-
-    rows = []
-    for year in years:
-        all_games = get_season_schedule(year)
-        completed = [
-            g for g in all_games
-            if g.get('status') == 'Final' and g.get('home_score') is not None
-        ]
-        for game in completed:
-            try:
-                features = build_game_features(game, year=year, weather=_NEUTRAL_WEATHER, for_training=True)
-                features['home_score'] = float(game['home_score'])
-                features['away_score'] = float(game['away_score'])
-                features['home_win'] = 1 if float(game['home_score']) > float(game['away_score']) else 0
-                features['status'] = 'Final'
-                features['game_date'] = game['game_date']
-                rows.append(features)
-            except Exception:
-                continue
-
-    return pd.DataFrame(rows) if rows else pd.DataFrame()
-
-
-def _get_models(force_retrain: bool = False) -> dict | None:
-    global _models_cache
-    if _models_cache and not force_retrain:
-        return _models_cache
-
-    if force_retrain or _needs_retrain():
-        training_df = _build_training_df()
-        if training_df.empty:
-            return None
-        models = train_models(training_df)
-        _write_model_meta(len(training_df))
-        _models_cache = models
-        return models
-
-    _models_cache = load_models()
-    return _models_cache
-
-
-def _build_inning_training_df(years: list[int] = None) -> pd.DataFrame:
-    if years is None:
-        years = _TRAINING_YEARS
-    rows = []
-    for year in years:
-        all_games = get_season_schedule(year)
-        completed = [
-            g for g in all_games
-            if g.get('status') == 'Final' and g.get('home_score') is not None
-        ]
-        # Parallel-fetch all linescores first (populates disk cache)
-        game_ids = [int(g['game_id']) for g in completed]
-        with ThreadPoolExecutor(max_workers=20) as pool:
-            futures = {pool.submit(get_game_linescore, gid): gid for gid in game_ids}
-            for fut in as_completed(futures):
-                fut.result()
-        for game in completed:
-            linescore = get_game_linescore(int(game['game_id']))
-            if not linescore:
-                continue
-            try:
-                game_feats = build_game_features(game, year=year, weather=_NEUTRAL_WEATHER, for_training=True)
-            except Exception:
-                continue
-            for inning in range(1, 10):
-                for batting_is_home in (True, False):
-                    key = 'home' if batting_is_home else 'away'
-                    inn_runs = linescore[key][inning - 1]
-                    row = build_inning_feature_row(game_feats, inning, batting_is_home)
-                    row['scored'] = 1 if inn_runs >= 1 else 0
-                    rows.append(row)
-    return pd.DataFrame(rows) if rows else pd.DataFrame()
-
-
-def _get_inning_model(force_retrain: bool = False):
-    global _inning_model_cache
-    if _inning_model_cache and not force_retrain:
-        return _inning_model_cache
-    if not force_retrain and inning_model_exists():
-        _inning_model_cache = load_inning_model()
-        return _inning_model_cache
-    df = _build_inning_training_df()
-    if df.empty or len(df) < 1000:
-        return None
-    _inning_model_cache = train_inning_model(df)
-    return _inning_model_cache
 
 
 def _current_version() -> str | None:
@@ -308,7 +158,7 @@ def _enrich_game(game: dict, core: dict) -> dict:
     }
 
 
-def run_daily_simulation(sim_date: str = None, n_simulations: int = 1000) -> list[dict]:
+def run_daily_simulation(sim_date: str = None) -> list[dict]:
     if sim_date is None:
         sim_date = date.today().strftime('%Y-%m-%d')
 
@@ -360,13 +210,12 @@ def compare_date(result_date: str, version: str = None) -> dict:
     only what is stored (frozen). Accuracy is computed from the stored core's
     win% and median scores, so it never changes unless the model version does.
     """
-    current = _current_version()
     if version is None:
-        version = current
-    if version == current:
-        cores = get_prediction(result_date)
-    else:
-        cores = _pred.load_prediction(_DATA_DIR, version, result_date) or []
+        version = _current_version()
+    # Read-only: grading never simulates. Today's live prediction is generated by
+    # run_daily_simulation/get_prediction; past dates are filled by the backfill.
+    # (Avoids a full simulation running inside a request on a cold start.)
+    cores = _pred.load_prediction(_DATA_DIR, version, result_date) or []
 
     actuals = _actuals_for_date(result_date)
     results = []
@@ -442,6 +291,12 @@ def _aggregate_days(n_days: int, version: str = None) -> dict:
         if version else []
     )
 
+    # Memoize the rollup per (version, today, window, ready-set). Invalidates
+    # when a new date finalizes (ready grows) or the day rolls over.
+    cache_key = (str(_DATA_DIR), version, dates[0] if dates else '', n_days, len(ready))
+    if cache_key in _aggregate_cache:
+        return _aggregate_cache[cache_key]
+
     daily = []
     with ThreadPoolExecutor(max_workers=6) as pool:
         futures = {pool.submit(compare_date, d, version): d for d in ready}
@@ -465,20 +320,35 @@ def _aggregate_days(n_days: int, version: str = None) -> dict:
         sum(r['avg_score_err'] for r in scored) / len(scored), 2
     ) if scored else None
 
-    return {
+    result = {
         'total_games': total_games,
         'days_with_games': len(daily),
         'winner_accuracy': accuracy,
         'avg_score_err': avg_err,
         'daily': daily,
     }
+    _aggregate_cache[cache_key] = result
+    return result
+
+
+_summary_cache: dict = {}  # immutable archived-version rollups (current version excluded)
+_aggregate_cache: dict = {}  # _aggregate_days rollups keyed by (version, today, window, ready-count)
 
 
 def _version_summary(version: str) -> dict:
     """Aggregate accuracy across every date stored for a model version (all of
-    its history, not just the last 90 days). Used by the archive pages."""
+    its history, not just the last 90 days). Used by the archive pages.
+
+    Archived (non-current) versions are immutable, so their rollup is cached
+    keyed by the stored-date set; the current version always recomputes.
+    """
+    dates = _pred.list_dates(_DATA_DIR, version)
+    is_current = (version == _current_version())
+    key = (str(_DATA_DIR), version, dates[-1] if dates else '', len(dates))
+    if not is_current and key in _summary_cache:
+        return _summary_cache[key]
     daily = []
-    for d in _pred.list_dates(_DATA_DIR, version):
+    for d in dates:
         try:
             r = compare_date(d, version)
             if r.get('n_completed', 0) > 0:
@@ -491,13 +361,16 @@ def _version_summary(version: str) -> dict:
     accuracy = round(correct / total * 100, 1) if total else 0
     scored = [r for r in daily if r.get('avg_score_err') is not None]
     avg_err = round(sum(r['avg_score_err'] for r in scored) / len(scored), 2) if scored else None
-    return {
+    result = {
         'total_games': total,
         'days_with_games': len(daily),
         'winner_accuracy': accuracy,
         'avg_score_err': avg_err,
         'daily': daily,
     }
+    if not is_current:
+        _summary_cache[key] = result
+    return result
 
 
 def _backfill_one(d: str) -> None:
@@ -524,143 +397,6 @@ def _backfill_results_cache(n_days: int = 90) -> None:
     ]
     with ThreadPoolExecutor(max_workers=6) as pool:
         pool.map(_backfill_one, todo)
-
-
-_OLLAMA_URL = "http://localhost:11434/api/generate"
-_OLLAMA_MODEL = "llama3.1:8b"
-_explanation_cache: dict = {}  # game_id → full explanation text
-
-
-def _load_disk_explanations(game_date: str) -> None:
-    """Load any saved explanations for game_date from disk into memory cache."""
-    day_dir = _EXPLANATIONS_DIR / game_date
-    if not day_dir.exists():
-        return
-    for f in day_dir.glob("*.txt"):
-        try:
-            gid = int(f.stem)
-            if gid not in _explanation_cache:
-                _explanation_cache[gid] = f.read_text()
-        except (ValueError, OSError):
-            pass
-
-
-def _save_disk_explanation(game_date: str, game_id: int, text: str) -> None:
-    """Persist one explanation to disk under data/explanations/{date}/{game_id}.txt."""
-    day_dir = _EXPLANATIONS_DIR / game_date
-    day_dir.mkdir(parents=True, exist_ok=True)
-    (day_dir / f"{game_id}.txt").write_text(text)
-
-
-def _build_explain_prompt(game: dict) -> str:
-    f = game.get('features', {})
-    away = game.get('away_name', 'Away')
-    home = game.get('home_name', 'Home')
-    venue = game.get('venue_name', 'the ballpark')
-    away_p = game.get('away_pitcher', 'TBD')
-    home_p = game.get('home_pitcher', 'TBD')
-    away_win = game.get('away_win_pct', 50)
-    home_win = game.get('home_win_pct', 50)
-    modal_away = game.get('modal_away_score', '?')
-    modal_home = game.get('modal_home_score', '?')
-
-    away_hand = 'LHP' if f.get('away_sp_is_lhp', 0) > 0.5 else 'RHP'
-    home_hand = 'LHP' if f.get('home_sp_is_lhp', 0) > 0.5 else 'RHP'
-
-    weather = game.get('weather') or {}
-    is_dome = f.get('is_dome', 0) > 0.5
-    if is_dome:
-        wx = 'indoor dome — weather not a factor'
-    else:
-        wx = f"{weather.get('temperature_f', '?'):.0f}°F, {weather.get('wind_speed_mph', 0):.0f} mph"
-        if f.get('wind_out', 0) > 0.5:
-            wx += ' blowing out (hitter-friendly)'
-        elif f.get('wind_in', 0) > 0.5:
-            wx += ' blowing in (pitcher-friendly)'
-
-    return f"""You are a sharp baseball analyst. Write 2-3 tight paragraphs explaining why the model predicts this outcome. Be specific, cite the numbers, and lead with the most decisive factors. No bullet points. Confident, present-tense analyst voice. Keep it under 200 words.
-
-{away} @ {home} — {venue}
-Win probability: {away} {away_win}% | {home} {home_win}%
-Most likely score: {away} {modal_away} – {home} {modal_home}
-
-Starters:
-  {away}: {away_p} ({away_hand}) ERA {f.get('away_sp_era',0):.2f} FIP {f.get('away_sp_fip',0):.2f} WHIP {f.get('away_sp_whip',0):.2f} — {f.get('away_sp_days_rest',5):.0f}d rest
-  {home}: {home_p} ({home_hand}) ERA {f.get('home_sp_era',0):.2f} FIP {f.get('home_sp_fip',0):.2f} WHIP {f.get('home_sp_whip',0):.2f} — {f.get('home_sp_days_rest',5):.0f}d rest
-
-Offense (wOBA / OPS / R/G last 15):
-  {away}: {f.get('away_team_woba',0):.3f} / {f.get('away_team_ops',0):.3f} / {f.get('away_runs_l15',0):.1f}
-  {home}: {f.get('home_team_woba',0):.3f} / {f.get('home_team_ops',0):.3f} / {f.get('home_runs_l15',0):.1f}
-
-Bullpen (ERA / L3 stress):
-  {away}: {f.get('away_bullpen_era',0):.2f} ERA / {f.get('away_bullpen_stress_l3',0):.1f} stress
-  {home}: {f.get('home_bullpen_era',0):.2f} ERA / {f.get('home_bullpen_stress_l3',0):.1f} stress
-
-Handedness OPS edge:
-  {away} vs {home_hand}: {f.get('away_bat_ops_vs_sp_hand',0):.3f}
-  {home} vs {away_hand}: {f.get('home_bat_ops_vs_sp_hand',0):.3f}
-
-Park runs factor: {f.get('park_runs_factor',1.0):.3f}  Elevation: {f.get('elevation_ft',500):.0f} ft  Weather: {wx}  Humidity: {f.get('humidity_pct',50):.0f}%
-
-Analysis:"""
-
-
-def _stream_ollama(prompt: str, game_id: int = None, game_date: str = None):
-    """Stream Ollama response as SSE chunks, caching the full text to memory and disk when done."""
-    buf = []
-    try:
-        resp = _requests.post(
-            _OLLAMA_URL,
-            json={'model': _OLLAMA_MODEL, 'prompt': prompt, 'stream': True,
-                  'options': {'num_predict': 350, 'temperature': 0.7}},
-            stream=True,
-            timeout=90,
-        )
-        for raw in resp.iter_lines():
-            if not raw:
-                continue
-            chunk = json.loads(raw)
-            text = chunk.get('response', '')
-            if text:
-                buf.append(text)
-                yield f"data: {json.dumps({'text': text})}\n\n"
-            if chunk.get('done'):
-                if game_id is not None and buf:
-                    full = ''.join(buf)
-                    _explanation_cache[game_id] = full
-                    if game_date:
-                        _save_disk_explanation(game_date, game_id, full)
-                yield "data: [DONE]\n\n"
-                return
-    except Exception as exc:
-        yield f"data: {json.dumps({'error': str(exc)})}\n\n"
-
-
-def _generate_explanation_sync(game: dict) -> str:
-    """Call Ollama synchronously (no streaming). Used by the background pre-generator."""
-    prompt = _build_explain_prompt(game)
-    try:
-        resp = _requests.post(
-            _OLLAMA_URL,
-            json={'model': _OLLAMA_MODEL, 'prompt': prompt, 'stream': False,
-                  'options': {'num_predict': 350, 'temperature': 0.7}},
-            timeout=120,
-        )
-        return resp.json().get('response', '').strip()
-    except Exception:
-        return ''
-
-
-def _pregenerate_explanations(games: list, game_date: str) -> None:
-    """Background: generate and persist explanations for all valid games sequentially."""
-    for game in games:
-        gid = game.get('game_id')
-        if not gid or game.get('error') or gid in _explanation_cache:
-            continue
-        text = _generate_explanation_sync(game)
-        if text:
-            _explanation_cache[gid] = text
-            _save_disk_explanation(game_date, gid, text)
 
 
 def create_app(testing: bool = False) -> Flask:
@@ -692,7 +428,7 @@ def create_app(testing: bool = False) -> Flask:
                 _results_cache = {}
 
         last_7 = _aggregate_days(7)
-        last_30 = _aggregate_days(90)
+        last_90 = _aggregate_days(90)
         meta = _read_model_meta()
         cur = _current_version()
         model_name = next((e.get('name') for e in _pred.read_versions(_DATA_DIR)
@@ -701,7 +437,7 @@ def create_app(testing: bool = False) -> Flask:
         return render_template('index.html',
                                results=_simulation_cache, sim_date=today,
                                yesterday=_results_cache, yesterday_date=yesterday,
-                               last_7=last_7, last_30=last_30,
+                               last_7=last_7, last_90=last_90,
                                model_name=model_name,
                                model_n_games=meta.get('n_games', '?'),
                                model_years=meta.get('training_years', []))
@@ -718,10 +454,8 @@ def create_app(testing: bool = False) -> Flask:
 
     @app.route('/retrain', methods=['POST'])
     def retrain():
-        global _models_cache, _inning_model_cache, _simulation_cache
-        global _last_simulated_date, _results_cache
-        _models_cache = {}
-        _inning_model_cache = None
+        global _simulation_cache, _last_simulated_date, _results_cache
+        _reset_model_caches()
         _get_models(force_retrain=True)
         _get_inning_model(force_retrain=True)
         # New pkls -> new version. Register it (archives the prior version's
@@ -754,8 +488,12 @@ def create_app(testing: bool = False) -> Flask:
 
     @app.route('/archive/<version>')
     def archive_version(version: str):
+        # Only serve known versions — `version` is used to build a filesystem
+        # path (predictions/<version>/...), so never trust it from the URL.
         meta = next((v for v in _pred.read_versions(_DATA_DIR)
-                     if v['version'] == version), {'version': version})
+                     if v['version'] == version), None)
+        if meta is None:
+            abort(404)
         summary = _version_summary(version)
         return render_template('archive_version.html', version=version, meta=meta,
                                summary=summary, is_current=(version == _current_version()))
