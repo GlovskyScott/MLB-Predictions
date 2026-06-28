@@ -112,20 +112,33 @@ def inning_model_exists(model_dir: Path = None) -> bool:
     return (Path(model_dir) / 'model_inning.pkl').exists()
 
 
+def runs_to_bucket(n) -> int:
+    """Per-inning run bucket: 0 runs -> 0, exactly 1 -> 1, 2 or more -> 2."""
+    n = int(n)
+    return 0 if n == 0 else (1 if n == 1 else 2)
+
+
 def train_inning_model(df: pd.DataFrame, model_dir: Path = None) -> XGBClassifier:
-    """Train a per-inning scoring probability classifier. Label column: 'scored' (0/1)."""
+    """Train a per-inning run-bucket classifier (3-class: 0 / 1 / 2+ runs).
+
+    Label column: 'runs_bucket' (0/1/2). Falls back to deriving it from a binary
+    'scored' column only if 'runs_bucket' is absent (legacy callers)."""
     if model_dir is None:
         model_dir = _DEFAULT_MODEL_DIR
     model_dir = Path(model_dir)
     model_dir.mkdir(parents=True, exist_ok=True)
 
     X = df[INNING_FEATURE_COLUMNS].fillna(df[INNING_FEATURE_COLUMNS].median()).values
-    y = df['scored'].astype(int).values
+    if 'runs_bucket' in df.columns:
+        y = df['runs_bucket'].astype(int).values
+    else:
+        y = df['scored'].astype(int).values  # legacy binary fallback
 
     model = XGBClassifier(
         n_estimators=300, max_depth=4, learning_rate=0.05,
         subsample=0.8, colsample_bytree=0.8,
-        eval_metric='logloss', random_state=42, n_jobs=-1,
+        objective='multi:softprob', num_class=3,
+        eval_metric='mlogloss', random_state=42, n_jobs=-1,
     )
     model.fit(X, y)
     joblib.dump(model, model_dir / 'model_inning.pkl')
@@ -138,16 +151,36 @@ def load_inning_model(model_dir: Path = None) -> XGBClassifier:
     return joblib.load(Path(model_dir) / 'model_inning.pkl')
 
 
+def _combine_inning_dist(home: list, away: list) -> list:
+    """Combine two teams' per-inning [P0, P1, P2+] (percent) into the inning's
+    total-runs distribution [P(0 total), P(exactly 1), P(2+ total)] under
+    independence — "P(any team scores)" framed by combined runs."""
+    h = [x / 100.0 for x in home]
+    a = [x / 100.0 for x in away]
+    c0 = h[0] * a[0]
+    c1 = h[0] * a[1] + h[1] * a[0]
+    c2 = max(0.0, 1.0 - c0 - c1)
+    return [round(c0 * 100, 1), round(c1 * 100, 1), round(c2 * 100, 1)]
+
+
 def predict_inning_probs(game_feats: dict, inning_model: XGBClassifier) -> dict:
-    """Return P(score >= 1 run) for each inning as percentages, for both teams."""
+    """Per-inning run-bucket distribution [P0, P1, P2+] (percent) for each team,
+    plus the combined per-inning total-runs distribution.
+
+    Returns {'home': 9x[3], 'away': 9x[3], 'combined': 9x[3]}."""
     home_rows = [build_inning_feature_row(game_feats, i, True) for i in range(1, 10)]
     away_rows = [build_inning_feature_row(game_feats, i, False) for i in range(1, 10)]
     X = pd.DataFrame(home_rows + away_rows)[INNING_FEATURE_COLUMNS].fillna(0).values
-    probs = inning_model.predict_proba(X)[:, 1]
-    return {
-        'home': [round(float(p) * 100, 1) for p in probs[:9]],
-        'away': [round(float(p) * 100, 1) for p in probs[9:]],
-    }
+    probs = inning_model.predict_proba(X)  # (18, 3)
+    if probs.shape[1] != 3:
+        # A legacy binary inning model — let the caller fall back to the simulator's
+        # 3-class distribution rather than emit malformed cells.
+        raise ValueError("inning model is not 3-class (0/1/2+); retrain required")
+    to_pct = lambda row: [round(float(p) * 100, 1) for p in row]
+    home = [to_pct(probs[i]) for i in range(9)]
+    away = [to_pct(probs[i]) for i in range(9, 18)]
+    combined = [_combine_inning_dist(home[i], away[i]) for i in range(9)]
+    return {'home': home, 'away': away, 'combined': combined}
 
 
 def predict_game(features: dict, models: dict) -> dict:

@@ -76,8 +76,12 @@ def walk_forward_pairs(df: pd.DataFrame, nsim: int, min_train: int):
 
 
 def inning_featurize() -> pd.DataFrame:
+    # Rebuild the cache if it predates the 3-class 'runs_bucket' label.
     if _INNING_CACHE.exists():
         df = pd.read_parquet(_INNING_CACHE)
+        if "runs_bucket" not in df.columns:
+            df = build_inning_training_df()
+            df.to_parquet(_INNING_CACHE)
     else:
         df = build_inning_training_df()
         df.to_parquet(_INNING_CACHE)
@@ -87,9 +91,10 @@ def inning_featurize() -> pd.DataFrame:
 
 
 def inning_walk_forward_pairs(df: pd.DataFrame, min_train: int):
-    """Yield honest (raw P(score>=1), scored 0/1) over all months."""
+    """Yield honest (raw [P0,P1,P2+], actual bucket 0/1/2) over all months."""
     months = sorted(df["month"].unique())
     raw, out = [], []
+    label_col = "runs_bucket" if "runs_bucket" in df.columns else "scored"
     for mo in months:
         train = df[df["game_date"] < f"{mo}-01"]
         if len(train) < min_train:
@@ -100,8 +105,8 @@ def inning_walk_forward_pairs(df: pd.DataFrame, min_train: int):
         with tempfile.TemporaryDirectory() as t:
             m = train_inning_model(train, model_dir=Path(t))
         X = test[INNING_FEATURE_COLUMNS].fillna(0).values
-        raw.extend(m.predict_proba(X)[:, 1])
-        out.extend(test["scored"].astype(int).values)
+        raw.extend(m.predict_proba(X).tolist())   # (n, 3)
+        out.extend(test[label_col].astype(int).values)
         print(f"  {mo}: train={len(train):>6}  innings={len(test):>4}  cumulative pairs={len(raw)}")
     return np.array(raw), np.array(out)
 
@@ -138,19 +143,19 @@ def main():
     path = cal.save(c, _DATA)
     print(f"\nSaved win calibrator -> {path}")
 
-    # ---- inning P(score>=1) calibrator ----
-    print("\n" + "=" * 60 + "\nINNING CALIBRATOR (per-inning P score>=1)\n" + "=" * 60)
+    # ---- 3-class inning run-bucket calibrator (P0 / P1 / P2+) ----
+    print("\n" + "=" * 60 + "\nINNING CALIBRATOR (per-inning P 0 / 1 / 2+ runs)\n" + "=" * 60)
     idf = inning_featurize()
     print(f"Loaded {len(idf)} inning rows {idf['game_date'].min()}..{idf['game_date'].max()}")
     iraw, iout = inning_walk_forward_pairs(idf, max(args.min_train * 4, 20000))
-    ic = cal.fit(iraw, iout)
-    icalib = np.array([ic(p) for p in iraw])
-    reliability(iraw, iout, "BEFORE — raw inning P(score>=1)")
-    reliability(icalib, iout, "AFTER  — calibrated inning P(score>=1)")
-    print(f"\nInning Platt fit: a={ic.a:.3f}, b={ic.b:+.3f}")
-    print(f"Example: raw 35% -> {ic(0.35)*100:.0f}% | raw 25% -> {ic(0.25)*100:.0f}%")
-    ipath = cal.save(ic, _DATA, cal.INNING_CALIBRATOR_FILE)
-    print(f"Saved inning calibrator -> {ipath}")
+    mc = cal.fit_multiclass(iraw, iout)
+    for c_idx, label in enumerate(("0 runs", "1 run", "2+ runs")):
+        col = iraw[:, c_idx]
+        m = mc.maps[c_idx]
+        reliability(col, (iout == c_idx).astype(int), f"P({label}) — raw")
+        print(f"  Platt fit class {label}: a={m.a:.3f}, b={m.b:+.3f}")
+    ipath = cal.save_multiclass(mc, _DATA)
+    print(f"Saved 3-class inning calibrator -> {ipath}")
 
 
 if __name__ == "__main__":

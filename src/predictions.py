@@ -27,8 +27,8 @@ PREDICTION_FIELDS = (
     'venue_id', 'venue_name', 'home_win_pct', 'away_win_pct',
     'median_home_score', 'median_away_score', 'modal_home_score', 'modal_away_score',
     'predicted_score', 'score_distribution',
-    'home_innings_scoring_pct', 'away_innings_scoring_pct',
-    'home_innings', 'away_innings', 'n_simulations',
+    'home_innings_dist', 'away_innings_dist', 'combined_innings_dist',
+    'n_simulations',
 )
 
 

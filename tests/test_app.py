@@ -13,10 +13,9 @@ MOCK_SIM_RESULT = {
     'median_home_score': 5.0,
     'median_away_score': 3.0,
     'predicted_score': '5-3',
-    'home_innings': [0.3, 0.2, 0.5, 0.6, 0.4, 0.3, 0.5, 0.7, 0.5],
-    'away_innings': [0.2, 0.3, 0.4, 0.3, 0.5, 0.3, 0.4, 0.4, 0.3],
-    'home_innings_scoring_pct': [30.0, 20.0, 50.0, 60.0, 40.0, 30.0, 50.0, 70.0, 50.0],
-    'away_innings_scoring_pct': [20.0, 30.0, 40.0, 30.0, 50.0, 30.0, 40.0, 40.0, 30.0],
+    'home_innings_dist': [[70.0, 22.0, 8.0]] * 9,
+    'away_innings_dist': [[78.0, 16.0, 6.0]] * 9,
+    'combined_innings_dist': [[55.0, 30.0, 15.0]] * 9,
     'score_distribution': {
         'home': [10, 20, 40, 60, 80],
         'away': [15, 25, 45, 55, 70],
@@ -102,6 +101,15 @@ def test_index_contains_win_probability(client, mocker):
     mocker.patch('src.app._aggregate_days', return_value=MOCK_AGGREGATE)
     response = client.get('/')
     assert b'58' in response.data
+
+
+def test_index_renders_inning_distribution_bars(client, mocker):
+    mocker.patch('src.app.run_daily_simulation', return_value=[MOCK_SIM_RESULT])
+    mocker.patch('src.app._get_results_for_date', return_value=MOCK_RESULTS_DATA)
+    mocker.patch('src.app._aggregate_days', return_value=MOCK_AGGREGATE)
+    response = client.get('/')
+    assert b'inn-bar' in response.data        # 3-class stacked bars rendered
+    assert b'Both' in response.data           # combined (any team scores) row
 
 
 def test_refresh_redirects(client, mocker):
@@ -444,6 +452,28 @@ def test_market_block_edges_and_default_odds():
     assert b['edge_ml_side'] == 'BOS' and b['edge_ml_pct'] == 13     # model 55% vs ~42%
     assert b['edge_total_side'] == 'Over' and b['edge_total_pct'] == 25  # model O 75% vs 50%
     assert b['edge_rl_side'] == 'NYY +1.5' and b['edge_rl_pct'] == 25   # fav covers 25% vs 50%
+
+
+def test_calibrate_core_applies_inning_dist_calibrator(tmp_path, mocker):
+    import src.app as app
+    from src import calibration as cal
+    mocker.patch.object(app, '_DATA_DIR', tmp_path)
+    app._calibrator_cache.clear()
+    # A shrinking per-class map -> calibrated dist differs but each inning still sums to 100.
+    mc = cal.MulticlassInningCalibrator(
+        [cal.PlattCalibrator(a=0.5), cal.PlattCalibrator(a=0.5), cal.PlattCalibrator(a=0.5)])
+    cal.save_multiclass(mc, tmp_path)
+    core = {
+        'home_win_pct': 55.0,
+        'home_innings_dist': [[70.0, 22.0, 8.0]] * 9,
+        'away_innings_dist': [[80.0, 15.0, 5.0]] * 9,
+        'combined_innings_dist': [[56.0, 30.0, 14.0]] * 9,
+    }
+    out = app._calibrate_core(core)
+    app._calibrator_cache.clear()
+    assert out['home_innings_dist'][0] != [70.0, 22.0, 8.0]      # calibrated
+    assert abs(sum(out['home_innings_dist'][0]) - 100.0) < 0.5    # renormalized
+    assert abs(sum(out['combined_innings_dist'][0]) - 100.0) < 0.5  # recomputed + valid
 
 
 def test_weighted_market_accuracy_pools_by_graded_count():

@@ -22,7 +22,8 @@ from pathlib import Path
 import joblib
 
 CALIBRATOR_FILE = "model_calibrator.pkl"              # win% calibrator
-INNING_CALIBRATOR_FILE = "model_inning_calibrator.pkl"  # per-inning P(score) calibrator
+INNING_CALIBRATOR_FILE = "model_inning_calibrator.pkl"  # legacy per-inning P(score) calibrator
+INNING_DIST_CALIBRATOR_FILE = "model_inning_dist_calibrator.pkl"  # 3-class P(0/1/2+) calibrator
 _EPS = 1e-6
 
 
@@ -101,3 +102,60 @@ def calibrate_pct(cal: PlattCalibrator | None, home_win_pct: float) -> float:
     if cal is None or home_win_pct is None:
         return home_win_pct
     return round(cal(home_win_pct / 100.0) * 100.0, 1)
+
+
+class MulticlassInningCalibrator:
+    """Calibrate a per-inning 3-class run distribution [P0, P1, P2+].
+
+    Holds one one-vs-rest Platt map per class; at apply time each class
+    probability is mapped independently then the three are renormalized to sum to
+    1. Near-identity in practice (the inning classifier is already well
+    calibrated), applied for consistency/robustness like the win% map.
+    """
+
+    def __init__(self, maps):
+        self.maps = list(maps)  # 3 PlattCalibrators
+
+
+def fit_multiclass(prob_rows, labels) -> MulticlassInningCalibrator:
+    """Fit a one-vs-rest calibrator per class from walk-forward pairs.
+
+    prob_rows: iterable of [p0, p1, p2] predicted probabilities (fractions).
+    labels:    iterable of the actual bucket (0/1/2).
+    """
+    import numpy as np
+    P = np.asarray(prob_rows, dtype=float)
+    y = np.asarray(labels, dtype=int)
+    maps = [fit(P[:, c], (y == c).astype(int)) for c in range(3)]
+    return MulticlassInningCalibrator(maps)
+
+
+def calibrate_dist(mc: "MulticlassInningCalibrator | None", dist_pct):
+    """Calibrate a [P0, P1, P2+] distribution in percent. Identity when mc None."""
+    if mc is None:
+        return [round(float(p), 1) for p in dist_pct]
+    raw = [mc.maps[c](dist_pct[c] / 100.0) for c in range(3)]
+    s = sum(raw) or 1.0
+    return [round(p / s * 100.0, 1) for p in raw]
+
+
+def save_multiclass(mc: MulticlassInningCalibrator, data_dir,
+                    filename: str = INNING_DIST_CALIBRATOR_FILE) -> Path:
+    path = Path(data_dir) / filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump({"maps": [{"a": m.a, "b": m.b} for m in mc.maps]}, path)
+    return path
+
+
+def load_multiclass(data_dir,
+                    filename: str = INNING_DIST_CALIBRATOR_FILE) -> "MulticlassInningCalibrator | None":
+    """Load the 3-class inning calibrator, or None if not built.
+
+    Safety: written by build_calibrator.py in this codebase, never from user
+    input or network. Joblib is acceptable here.
+    """
+    path = Path(data_dir) / filename
+    if not path.exists():
+        return None
+    d = joblib.load(path)
+    return MulticlassInningCalibrator([PlattCalibrator(a=m["a"], b=m["b"]) for m in d["maps"]])

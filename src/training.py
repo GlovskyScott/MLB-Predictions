@@ -10,7 +10,7 @@ from src.fetcher import get_season_schedule, get_game_linescore
 from src.features import build_game_features, build_inning_feature_row, _NEUTRAL_WEATHER, FEATURE_VERSION
 from src.model import (
     train_models, load_models, models_exist,
-    train_inning_model, load_inning_model, inning_model_exists,
+    train_inning_model, load_inning_model, inning_model_exists, runs_to_bucket,
 )
 
 _DATA_DIR = Path(__file__).parent.parent / "data"
@@ -122,7 +122,8 @@ def build_inning_training_df(years: list[int] = None) -> pd.DataFrame:
                     key = 'home' if batting_is_home else 'away'
                     inn_runs = linescore[key][inning - 1]
                     row = build_inning_feature_row(game_feats, inning, batting_is_home)
-                    row['scored'] = 1 if inn_runs >= 1 else 0
+                    row['runs_bucket'] = runs_to_bucket(inn_runs)  # 0 / 1 / 2+
+                    row['scored'] = 1 if inn_runs >= 1 else 0      # kept for legacy callers
                     row['game_date'] = game.get('game_date', '')
                     rows.append(row)
     return pd.DataFrame(rows) if rows else pd.DataFrame()

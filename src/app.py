@@ -17,6 +17,7 @@ from src.features import build_game_features, build_inning_feature_row, _NEUTRAL
 from src.model import (
     train_models, load_models, models_exist, predict_game, build_training_data,
     train_inning_model, load_inning_model, inning_model_exists, predict_inning_probs,
+    _combine_inning_dist as _model_combine_inning,
 )
 from src.simulator import simulate_game
 from src.stadiums import get_stadium
@@ -61,15 +62,23 @@ def _get_calibrator(filename=_cal.CALIBRATOR_FILE):
     return _calibrator_cache[key]
 
 
-def _calibrate_core(core: dict) -> dict:
-    """Return a copy of a prediction core with its win% and per-inning scoring
-    probabilities calibrated for display.
+def _get_inning_dist_calibrator():
+    """Load (and cache) the 3-class inning calibrator for the active data dir."""
+    key = (str(_DATA_DIR), _cal.INNING_DIST_CALIBRATOR_FILE)
+    if key not in _calibrator_cache:
+        _calibrator_cache[key] = _cal.load_multiclass(_DATA_DIR)
+    return _calibrator_cache[key]
 
-    The raw simulated win% — and the inning classifier's P(score>=1) — are
-    overconfident out-of-sample; the calibrators pull them back toward the true
-    rate (see src/calibration.py). The win% map is monotonic through 50%, so the
-    favored side — and therefore the graded pick — never changes. The stored core
-    on disk is untouched; this only affects what is shown and the edge math.
+
+def _calibrate_core(core: dict) -> dict:
+    """Return a copy of a prediction core with its win% and per-inning run
+    distribution calibrated for display.
+
+    The raw simulated win% — and the inning classifier's bucket probabilities —
+    are overconfident out-of-sample; the calibrators pull them back toward the
+    true rate (see src/calibration.py). The win% map is monotonic through 50%, so
+    the favored side — and therefore the graded pick — never changes. The stored
+    core on disk is untouched; this only affects what is shown and the edge math.
     No-op for whichever calibrators are absent (identity)."""
     out = dict(core)
     win_cal = _get_calibrator()
@@ -77,6 +86,16 @@ def _calibrate_core(core: dict) -> dict:
     if win_cal is not None and hwp is not None:
         hp = _cal.calibrate_pct(win_cal, hwp)
         out.update(home_win_pct=hp, away_win_pct=round(100.0 - hp, 1), raw_home_win_pct=hwp)
+    # 3-class inning distribution (new cores). Recompute the combined row from the
+    # calibrated per-team dists so the three stay consistent.
+    dist_cal = _get_inning_dist_calibrator()
+    if dist_cal is not None and core.get('home_innings_dist') and core.get('away_innings_dist'):
+        hd = [_cal.calibrate_dist(dist_cal, c) for c in core['home_innings_dist']]
+        ad = [_cal.calibrate_dist(dist_cal, c) for c in core['away_innings_dist']]
+        out['home_innings_dist'] = hd
+        out['away_innings_dist'] = ad
+        out['combined_innings_dist'] = [_model_combine_inning(h, a) for h, a in zip(hd, ad)]
+    # Legacy cores (binary P(score>=1)).
     inn_cal = _get_calibrator(_cal.INNING_CALIBRATOR_FILE)
     if inn_cal is not None:
         for key in ('home_innings_scoring_pct', 'away_innings_scoring_pct'):
@@ -135,8 +154,9 @@ def _simulate_core_for_date(sim_date: str, models, inning_model) -> list[dict]:
             if inning_model:
                 try:
                     inning_probs = predict_inning_probs(features, inning_model)
-                    sim['home_innings_scoring_pct'] = inning_probs['home']
-                    sim['away_innings_scoring_pct'] = inning_probs['away']
+                    sim['home_innings_dist'] = inning_probs['home']
+                    sim['away_innings_dist'] = inning_probs['away']
+                    sim['combined_innings_dist'] = inning_probs['combined']
                 except Exception:
                     pass
             cores.append(_pred.extract_core({**game, **sim}))
@@ -388,7 +408,20 @@ def _market_total_lines(games: list, market: dict) -> dict:
 
 
 def _inning_scoring_lines(g: dict) -> str:
-    """Compact per-inning P(score>=1) for away / home / either (calibrated)."""
+    """Compact per-inning run-bucket distribution (0 / 1 / 2+ runs) for away,
+    home, and the combined (any team) line."""
+    ad, hd, cd = (g.get('away_innings_dist'), g.get('home_innings_dist'),
+                  g.get('combined_innings_dist'))
+    if ad and hd:
+        aw, hw = g.get('away_abbr', 'AWAY'), g.get('home_abbr', 'HOME')
+        fmt = lambda dist: " ".join(
+            f"i{j+1} {round(c[0])}/{round(c[1])}/{round(c[2])}" for j, c in enumerate(dist))
+        out = (f"Per-inning run distribution P(0/1/2+ runs) by inning 1-9 — "
+               f"{aw}: {fmt(ad)}; {hw}: {fmt(hd)}")
+        if cd:
+            out += f"; both teams combined: {fmt(cd)}"
+        return out + " (percent)."
+    # Legacy cores (binary P(score>=1)).
     ap, hp = g.get('away_innings_scoring_pct'), g.get('home_innings_scoring_pct')
     if not ap or not hp:
         return ""

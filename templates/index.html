@@ -6,6 +6,10 @@
 <div class="summary-stat"><div class="s-label" title="Run line ±1.5: % of model picks that covered">Spread</div><div class="s-value {% if sp is not none and sp >= 52 %}good{% else %}neutral{% endif %}">{% if sp is not none %}{{ sp }}%{% else %}—{% endif %}</div></div>
 <div class="summary-stat"><div class="s-label" title="Total O/U vs market line: % of model picks correct (pushes excluded)">Total</div><div class="s-value {% if to is not none and to >= 52 %}good{% else %}neutral{% endif %}">{% if to is not none %}{{ to }}%{% else %}—{% endif %}</div></div>
 {%- endmacro %}
+{% macro inn_bar(cell, color) -%}
+<div class="inn-bar" title="0 runs: {{ cell[0] }}% · 1 run: {{ cell[1] }}% · 2+ runs: {{ cell[2] }}%"><span class="seg0" style="height:{{ cell[0] }}%"></span><span class="seg1" style="height:{{ cell[1] }}%"></span><span class="seg2" style="height:{{ cell[2] }}%"></span></div>
+<div class="inn-score-pct" style="color:{{ color }};">{{ (cell[1] + cell[2]) | round | int }}%</div>
+{%- endmacro %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -76,6 +80,14 @@
         .inn-table .inn-lbl-cell { text-align: left; font-weight: 700; font-size: 10px; padding: 4px 8px; white-space: nowrap; border: 1px solid #1e1e1e; background: #0e0e0e; cursor: default; }
         .inn-score-pct { font-size: 11px; font-weight: 700; line-height: 1.3; }
         .inn-score-avg { font-size: 9px; color: #555; }
+        .inn-bar { width: 16px; height: 38px; margin: 0 auto 3px; display: flex; flex-direction: column-reverse; border-radius: 2px; overflow: hidden; background: #1c1c1c; }
+        .inn-bar span { display: block; width: 100%; }
+        .inn-bar .seg0 { background: #2c2c2c; }
+        .inn-bar .seg1 { background: #4a90d9; }
+        .inn-bar .seg2 { background: #e8a33d; }
+        .inn-legend { font-size: 10px; color: #777; margin: 2px 0 10px; display: flex; gap: 12px; }
+        .inn-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+        .inn-legend .seg0 { background: #2c2c2c; } .inn-legend .seg1 { background: #4a90d9; } .inn-legend .seg2 { background: #e8a33d; }
 
         /* ── Results panels ── */
         .results-panel { background: #141414; border: 1px solid #222; border-radius: 10px; overflow: hidden; margin-bottom: 14px; }
@@ -279,7 +291,7 @@
                 <span title="Home starting pitcher">SP: <strong>{{ r.home_pitcher }}</strong></span>
             </div>
 
-            <div class="subsection-label">Inning Breakdown — Scoring % &amp; Avg Runs</div>
+            <div class="subsection-label">Inning Breakdown — Run Distribution P(0 / 1 / 2+)</div>
             <table class="inn-table">
                 <thead>
                     <tr>
@@ -288,36 +300,45 @@
                     </tr>
                 </thead>
                 <tbody>
+                    {% if r.away_innings_dist and r.home_innings_dist %}
+                    <tr>
+                        <td class="inn-lbl-cell" style="color:{{ r.away_bar_color }};" title="{{ r.away_name }} — P(0 / 1 / 2+ runs) per inning">Away</td>
+                        {% for cell in r.away_innings_dist %}<td>{{ inn_bar(cell, r.away_bar_color) }}</td>{% endfor %}
+                    </tr>
+                    <tr>
+                        <td class="inn-lbl-cell" style="color:{{ r.home_bar_color }};" title="{{ r.home_name }} — P(0 / 1 / 2+ runs) per inning">Home</td>
+                        {% for cell in r.home_innings_dist %}<td>{{ inn_bar(cell, r.home_bar_color) }}</td>{% endfor %}
+                    </tr>
+                    {% if r.combined_innings_dist %}
+                    <tr>
+                        <td class="inn-lbl-cell" style="color:#888;" title="Both teams — P(0 / 1 / 2+ combined runs); % = P(any team scores)">Both</td>
+                        {% for cell in r.combined_innings_dist %}<td>{{ inn_bar(cell, '#aaa') }}</td>{% endfor %}
+                    </tr>
+                    {% endif %}
+                    {% else %}
                     <tr>
                         <td class="inn-lbl-cell" style="color:{{ r.away_bar_color }};" title="{{ r.away_name }}">Away</td>
                         {% for i in range(9) %}
-                        {% set avg = r.away_innings[i] %}{% set pct = r.away_innings_scoring_pct[i] %}
-                        <td>
-                            <div class="inn-score-pct" style="color:{{ r.away_bar_color }};">{{ pct }}%</div>
-                            <div class="inn-score-avg">{{ "%.1f"|format(avg) }}</div>
-                        </td>
+                        {% set pct = r.away_innings_scoring_pct[i] %}
+                        <td><div class="inn-score-pct" style="color:{{ r.away_bar_color }};">{{ pct }}%</div></td>
                         {% endfor %}
                     </tr>
                     <tr>
                         <td class="inn-lbl-cell" style="color:{{ r.home_bar_color }};" title="{{ r.home_name }}">Home</td>
                         {% for i in range(9) %}
-                        {% set avg = r.home_innings[i] %}{% set pct = r.home_innings_scoring_pct[i] %}
-                        <td>
-                            <div class="inn-score-pct" style="color:{{ r.home_bar_color }};">{{ pct }}%</div>
-                            <div class="inn-score-avg">{{ "%.1f"|format(avg) }}</div>
-                        </td>
+                        {% set pct = r.home_innings_scoring_pct[i] %}
+                        <td><div class="inn-score-pct" style="color:{{ r.home_bar_color }};">{{ pct }}%</div></td>
                         {% endfor %}
                     </tr>
-                    <tr>
-                        <td class="inn-lbl-cell" style="color:#555;" title="Probability at least one team scores this inning">Either</td>
-                        {% for i in range(9) %}
-                        {% set pa = r.away_innings_scoring_pct[i] %}{% set ph = r.home_innings_scoring_pct[i] %}
-                        {% set e = ((1 - (1 - pa/100) * (1 - ph/100)) * 100) | round | int %}
-                        <td><div class="inn-score-pct" style="color:#666;">{{ e }}%</div></td>
-                        {% endfor %}
-                    </tr>
+                    {% endif %}
                 </tbody>
             </table>
+            {% if r.away_innings_dist %}
+            <div class="inn-legend">
+                <span><i class="seg0"></i>0 runs</span><span><i class="seg1"></i>1 run</span><span><i class="seg2"></i>2+ runs</span>
+                <span style="color:#666">· % = P(scores)</span>
+            </div>
+            {% endif %}
 
             <div class="subsection-label" style="margin-top:10px;">Score Probability — Likelihood of Each Final Run Total Across Simulations</div>
             <div class="chart-container"><canvas id="chart-{{ r.game_id }}"></canvas></div>
