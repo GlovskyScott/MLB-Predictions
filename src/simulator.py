@@ -13,11 +13,27 @@ def _distribute_runs_to_innings(total_runs: int, rng: np.random.RandomState) -> 
     return counts.tolist()
 
 
-def simulate_game(prediction: dict, n_simulations: int = 1000, seed: int = None) -> dict:
+def _runs_draw(rng: np.random.RandomState, mu: float, overdispersion: float) -> int:
+    """Sample a team's run total. MLB run-scoring is overdispersed (variance ≈ 2×
+    mean), which a plain Poisson (variance == mean) underestimates — it misses the
+    blowout tail. A negative binomial with variance = overdispersion·mu captures
+    that; overdispersion == 1 collapses back to Poisson.
+    """
+    if overdispersion <= 1.0 or mu <= 0:
+        return int(rng.poisson(max(0.0, mu)))
+    r = mu / (overdispersion - 1.0)   # NB dispersion: var = mu + mu^2/r = overdispersion*mu
+    p = r / (r + mu)
+    return int(rng.negative_binomial(r, p))
+
+
+def simulate_game(prediction: dict, n_simulations: int = 1000, seed: int = None,
+                  overdispersion: float = 2.0) -> dict:
     """
     Run Monte Carlo simulation for a single game.
 
     prediction: output from model.predict_game()
+    overdispersion: variance/mean ratio of the per-team run distribution. ~2.0
+        matches MLB (negative binomial); 1.0 reverts to Poisson.
     Returns aggregated statistics across all simulations.
     """
     rng = np.random.RandomState(seed)
@@ -33,8 +49,8 @@ def simulate_game(prediction: dict, n_simulations: int = 1000, seed: int = None)
     away_innings_matrix = np.zeros((n_simulations, 9), dtype=int)
 
     for i in range(n_simulations):
-        home_runs = int(rng.poisson(home_lambda))
-        away_runs = int(rng.poisson(away_lambda))
+        home_runs = _runs_draw(rng, home_lambda, overdispersion)
+        away_runs = _runs_draw(rng, away_lambda, overdispersion)
 
         home_by_inning = _distribute_runs_to_innings(home_runs, rng)
         away_by_inning = _distribute_runs_to_innings(away_runs, rng)
