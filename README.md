@@ -13,7 +13,7 @@ For every game on today's schedule the app:
 3. Simulates the game **1,000 times** via Poisson Monte Carlo (fixed per-game seed) to produce a score distribution, inning-by-inning scoring percentages, and a most-likely final score.
 4. Overrides the simulation's inning percentages with a separate **inning classifier** trained on 100k+ individual inning observations.
 5. **Freezes** the prediction to disk under the current model version (`data/predictions/<version>/<date>.json`) — it is served verbatim forever after and never re-simulated.
-6. Auto-generates an analyst-style **AI explanation** per game using a local Ollama model (`llama3.1:8b`), streamed into the card.
+6. Auto-generates an analyst-style **AI explanation** per game using a local Ollama model (`qwen2.5:14b`), streamed into the card.
 7. Displays everything in a dark dashboard with **historical accuracy** over the last 90 days, plus an **archive** comparing every model version's accuracy.
 
 ---
@@ -27,7 +27,7 @@ For every game on today's schedule the app:
 | Feature engineering | mlb-statsapi, pybaseball |
 | Simulation | NumPy Poisson Monte Carlo |
 | Weather | Open-Meteo (free, no API key) |
-| AI explanations | Ollama — `llama3.1:8b` (local) |
+| AI explanations | Ollama — `qwen2.5:14b` (local) |
 | Charts | Chart.js |
 | Data pipeline | pandas |
 | Tests | pytest, pytest-mock |
@@ -128,7 +128,7 @@ MLB-Predictions/
 
 - **Python 3.11+** (3.12 recommended)
 - **Git**
-- **[Ollama](https://ollama.com)** with `llama3.1:8b` — only needed to *generate new* AI explanations; cached ones display without it
+- **[Ollama](https://ollama.com)** with `qwen2.5:14b` — only needed to *generate new* AI explanations; cached ones display without it
 - **OpenMP runtime** for XGBoost — on macOS this is `libomp` (`brew install libomp`). Without it `import xgboost` fails with a `libxgboost.dylib could not be loaded` error.
 
 ### Install
@@ -147,7 +147,7 @@ pip install -r requirements.txt
 
 ```bash
 brew install ollama && brew services start ollama
-ollama pull llama3.1:8b            # ~4.9 GB
+ollama pull qwen2.5:14b            # ~9 GB (or qwen2.5:7b for less RAM; set OLLAMA_MODEL to override)
 ```
 
 ### Run
@@ -205,7 +205,7 @@ Each game card shows:
 - **Weather strip** — e.g. `72°F · 5 mph · 58% RH · Coors Field · 5200 ft`; domes show `Dome · Rogers Centre · 276 ft`
 - **Inning breakdown** — scoring % and average runs per inning (from the inning classifier)
 - **Score-distribution chart** — run-total probabilities
-- **AI analysis** — streamed from `llama3.1:8b` via SSE, covering starter matchup, offensive edges, bullpen state, handedness, park/weather/elevation
+- **AI analysis** — streamed from `qwen2.5:14b` via SSE, covering starter matchup, offensive edges, bullpen state, handedness, park/weather/elevation
 - **Lineup** — batting order 1–9 for both teams, when posted
 
 Below the cards: yesterday's graded results, plus 7-day and 90-day accuracy rollups. The footer shows the current model name (e.g. `Model v4.1`).

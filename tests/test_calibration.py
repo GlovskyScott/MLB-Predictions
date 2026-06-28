@@ -105,7 +105,7 @@ def test_game_chat_line_includes_inning_breakdown():
     line = app._game_chat_line(g)
     assert 'by inning 1-9' in line
     assert 'either team' in line
-    assert 'predicted runs' in line
+    assert 'projected final score' in line and 'None' not in line
 
 
 def _synthetic():

@@ -303,10 +303,20 @@ def _market_block(game: dict, mk: dict) -> dict:
     ih, ia = _implied_prob(mk.get('ml_home')), _implied_prob(mk.get('ml_away'))
     mkt_home = ih / (ih + ia) if (ih + ia) else 0.5
     ml_edge = model_home_win - mkt_home
+    pct = round(abs(ml_edge) * 100)
     block['edge_ml_side'] = ha if ml_edge >= 0 else aa
-    block['edge_ml_pct'] = round(abs(ml_edge) * 100)
+    # Only surface an edge once it clears the noise floor. Below it, the model-vs-
+    # market gap doesn't reliably beat a sharp close (walk-forward CLV: bets <5%
+    # edge ~breakeven at +1.1%, ≥5% edge +2.2% vs real 2019/21 closes), so showing
+    # those as actionable "edges" over-promises. Sub-threshold -> no edge.
+    block['edge_ml_pct'] = pct if pct >= _EDGE_MIN_PCT else 0
+    block['edge_ml_raw_pct'] = pct          # pre-threshold gap, kept for detail/debug
     return block
 
+
+# Minimum model-vs-market gap (percentage points) to count as an actionable edge.
+# Below this, the gap is within model noise and doesn't beat a sharp close. Tunable.
+_EDGE_MIN_PCT = 5
 
 _EDGE_MARKETS = (('ML', 'edge_ml_side', 'edge_ml_pct'),)
 
@@ -419,9 +429,9 @@ def _game_chat_line(g: dict) -> str:
     parts = [
         f"{aw} @ {hw} ({g.get('away_name')} at {g.get('home_name')}):",
         f"model win% {aw} {g.get('away_win_pct')}% / {hw} {g.get('home_win_pct')}%,",
-        f"predicted runs {aw} {g.get('predicted_away_runs')} / {hw} {g.get('predicted_home_runs')} "
-        f"(most-likely score {g.get('modal_away_score')}-{g.get('modal_home_score')}, "
-        f"median {g.get('median_away_score')}-{g.get('median_home_score')});",
+        f"projected final score (median) {aw} {g.get('median_away_score')}-"
+        f"{hw} {g.get('median_home_score')}, most-likely "
+        f"{g.get('modal_away_score')}-{g.get('modal_home_score')};",
         f"SP {g.get('away_pitcher')} vs {g.get('home_pitcher')};",
     ]
     venue = g.get('venue_name')
@@ -435,10 +445,24 @@ def _game_chat_line(g: dict) -> str:
     if m:
         parts.append(f"model fair moneyline: {aw} {m.get('ml_away')}/{hw} {m.get('ml_home')};")
     if mk:
+        side, pct = mk.get('edge_ml_side'), mk.get('edge_ml_pct') or 0
+        side_price = mk.get('ml_home') if side == hw else mk.get('ml_away')
+        fair_price = (m.get('ml_home') if side == hw else m.get('ml_away')) if m else None
+        side_wp = g.get('home_win_pct') if side == hw else g.get('away_win_pct')
+        if pct >= _EDGE_MIN_PCT:
+            why = (f" WHY (state it this way, exact signs): the model gives {side} a {side_wp}% "
+                   f"win chance, so its fair price is {fair_price}; the market only asks "
+                   f"{side_price}, a more generous number than fair — that gap is the +{pct}% "
+                   f"edge.") if fair_price is not None else ""
+            verdict = (f"COMPUTED VERDICT: value side is {side} at {side_price} "
+                       f"(model edge +{pct}%). The bet, if any, is {side} at {side_price} — "
+                       f"never the other side, never a different price.{why}")
+        else:
+            verdict = ("COMPUTED VERDICT: NO BET — no side clears the "
+                       f"{_EDGE_MIN_PCT}% edge threshold; model and market roughly agree.")
         parts.append(
             f"ESPN avg moneyline ({mk.get('n_books', 0)} books): "
-            f"{aw} {mk.get('ml_away')}/{hw} {mk.get('ml_home')}; "
-            f"model moneyline edge vs market: {mk.get('edge_ml_side')} +{mk.get('edge_ml_pct')}%."
+            f"{aw} {mk.get('ml_away')}/{hw} {mk.get('ml_home')}. {verdict}"
         )
     return " ".join(p for p in parts if p)
 
@@ -866,6 +890,25 @@ def _track_ui(last_7: dict, last_30: dict, last_90: dict,
     }
 
 
+def _self_heal_closing_odds(days: int = 7) -> None:
+    """Backfill the previous days' real closing lines not yet captured (launch-time).
+
+    'Previous days only' — a true close exists only after a game ends, and the free
+    /odds feed drops finished games, so a past close needs the paid historical
+    endpoint (gated on ODDS_API_KEY; no-op without it). The resumable manifest makes
+    steady state ~yesterday (one cheap day, ~40 credits); a per-launch credit cap
+    bounds the cost if there's a gap.
+    """
+    from datetime import timedelta
+    from src import closing_backfill as _cb
+    end = (date.today() - timedelta(days=1)).strftime('%Y-%m-%d')
+    start = (date.today() - timedelta(days=days)).strftime('%Y-%m-%d')
+    try:
+        _cb.backfill_range(_DATA_DIR, start, end, max_credits=2000)
+    except Exception:
+        pass
+
+
 def create_app(testing: bool = False) -> Flask:
     app = Flask(__name__, template_folder='../templates', static_folder='../static')
     app.config['TESTING'] = testing
@@ -874,6 +917,7 @@ def create_app(testing: bool = False) -> Flask:
         bootstrap_model_cache()
         bootstrap_predictions_cache()
         threading.Thread(target=_backfill_results_cache, daemon=True).start()
+        threading.Thread(target=_self_heal_closing_odds, daemon=True).start()
 
     @app.route('/')
     def index():
@@ -974,6 +1018,29 @@ def create_app(testing: bool = False) -> Flask:
         summary = _version_summary(version)
         return render_template('archive_version.html', version=version, meta=meta,
                                summary=summary, is_current=(version == _current_version()))
+
+    @app.route('/history')
+    def history():
+        """Every past game with a stored prediction: final score, the model's
+        (Consensus) pick graded against the result, and the real closing line."""
+        version = _current_version()
+        days, totals = [], {'n': 0, 'correct': 0, 'with_close': 0}
+        for d in sorted(_pred.list_dates(_DATA_DIR, version), reverse=True):
+            day = compare_date(d, version)
+            games = day.get('games') or []
+            if not games:
+                continue
+            closing = _pred.load_closing_odds(_DATA_DIR, d)
+            for g in games:
+                c = closing.get(str(g.get('game_id')))
+                g['close_home'] = _fmt_american(c.get('ml_home')) if c else None
+                g['close_away'] = _fmt_american(c.get('ml_away')) if c else None
+                totals['n'] += 1
+                totals['correct'] += 1 if g.get('winner_correct') else 0
+                totals['with_close'] += 1 if c else 0
+            days.append(day)
+        totals['accuracy'] = round(100 * totals['correct'] / totals['n'], 1) if totals['n'] else 0
+        return render_template('history.html', days=days, totals=totals, version=version)
 
     @app.route('/chat', methods=['POST'])
     def chat():

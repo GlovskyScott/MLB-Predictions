@@ -103,7 +103,13 @@ def build_blender(pairs, data_dir):
             continue
         date = r["date"]
         if date not in odds_cache:
-            odds_cache[date] = _pred.load_market_odds(data_dir, date)
+            # Prefer the REAL closing line (sharp; market gets real weight); fall
+            # back to the opener store for dates without a captured close. Fitting
+            # on soft openers alone makes the blender ignore the market (b~0),
+            # which leaves the overconfident model's full divergence on display.
+            merged = dict(_pred.load_market_odds(data_dir, date))
+            merged.update(_pred.load_closing_odds(data_dir, date))
+            odds_cache[date] = merged
         o = odds_cache[date].get(str(gid))
         if not o:
             continue
