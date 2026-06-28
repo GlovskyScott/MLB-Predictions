@@ -22,7 +22,10 @@ sys.path.insert(0, str(_REPO))
 warnings.filterwarnings("ignore")
 
 from src import calibration as cal  # noqa: E402
+from src import blend as _blend  # noqa: E402
+from src import predictions as _pred  # noqa: E402
 from src.features import FEATURE_COLUMNS, INNING_FEATURE_COLUMNS  # noqa: E402
+from src.fetcher import devig_home_prob  # noqa: E402
 from src.model import train_models, train_inning_model  # noqa: E402
 from src.simulator import simulate_game  # noqa: E402
 from src.training import build_training_df, build_inning_training_df  # noqa: E402
@@ -35,6 +38,9 @@ _DATA = _REPO / "data"
 def featurize() -> pd.DataFrame:
     if _CACHE.exists():
         df = pd.read_parquet(_CACHE)
+        if "game_id" not in df.columns:        # stale cache predates game_id -> rebuild
+            df = build_training_df()
+            df.to_parquet(_CACHE)
     else:
         df = build_training_df()
     df = df.dropna(subset=["home_score", "away_score"]).copy()
@@ -50,9 +56,11 @@ def _fit_regressors(train: pd.DataFrame):
 
 
 def walk_forward_pairs(df: pd.DataFrame, nsim: int, min_train: int):
-    """Yield honest (raw_sim_home_win_prob, actual_home_win) over all months."""
+    """Yield honest (raw_sim_home_win_prob, actual_home_win) over all months,
+    plus per-game id/date so the market blender can join the odds store."""
     months = sorted(df["month"].unique())
-    raw, out = [], []
+    raw, out, gids, dates = [], [], [], []
+    has_gid = "game_id" in df.columns
     for mo in months:
         train = df[df["game_date"] < f"{mo}-01"]
         if len(train) < min_train:
@@ -71,8 +79,39 @@ def walk_forward_pairs(df: pd.DataFrame, nsim: int, min_train: int):
             )
             raw.append(sim["home_win_pct"] / 100.0)
             out.append(int(row["home_win"]))
+            gids.append(row["game_id"] if has_gid else None)
+            dates.append(str(row["game_date"]))
         print(f"  {mo}: train={len(train):>5}  games={len(test):>3}  cumulative pairs={len(raw)}")
-    return np.array(raw), np.array(out)
+    return np.array(raw), np.array(out), gids, dates
+
+
+def build_blender(pairs, data_dir):
+    """Fit the market blender from walk-forward pairs joined to the market-odds store.
+
+    pairs: iterable of {'game_id', 'date', 'model_home_prob' (0-1), 'home_win' (0/1)}.
+    Returns a MarketBlender, or None if too few games have a captured market line.
+    """
+    model_ps, market_ps, ys = [], [], []
+    odds_cache = {}
+    for r in pairs:
+        gid = r.get("game_id")
+        if gid is None:
+            continue
+        date = r["date"]
+        if date not in odds_cache:
+            odds_cache[date] = _pred.load_market_odds(data_dir, date)
+        o = odds_cache[date].get(str(gid))
+        if not o:
+            continue
+        mp = devig_home_prob(o.get("ml_home"), o.get("ml_away"))
+        if mp is None:
+            continue
+        model_ps.append(r["model_home_prob"])
+        market_ps.append(mp)
+        ys.append(int(r["home_win"]))
+    if len(ys) < 500:
+        return None
+    return _blend.fit(model_ps, market_ps, ys)
 
 
 def inning_featurize() -> pd.DataFrame:
@@ -129,7 +168,7 @@ def main():
 
     df = featurize()
     print(f"Loaded {len(df)} games {df['game_date'].min()}..{df['game_date'].max()}")
-    raw, out = walk_forward_pairs(df, args.nsim, args.min_train)
+    raw, out, gids, dates = walk_forward_pairs(df, args.nsim, args.min_train)
 
     c = cal.fit(raw, out)
     calibrated = np.array([c(p) for p in raw])
@@ -142,6 +181,30 @@ def main():
 
     path = cal.save(c, _DATA)
     print(f"\nSaved win calibrator -> {path}")
+
+    # ---- market blender: blend raw model win% with the de-vigged market line ----
+    print("\n" + "=" * 60 + "\nMARKET BLENDER (Consensus moneyline)\n" + "=" * 60)
+    pairs = [{"game_id": g, "date": d, "model_home_prob": float(p), "home_win": int(y)}
+             for g, d, p, y in zip(gids, dates, raw, out)]
+    blender = build_blender(pairs, _DATA)
+    if blender is not None:
+        matched = sum(1 for r in pairs if r["game_id"] is not None
+                      and str(r["game_id"]) in _pred.load_market_odds(_DATA, r["date"]))
+        bp = np.array([blender(p, devig_home_prob(
+            _pred.load_market_odds(_DATA, d).get(str(g), {}).get("ml_home"),
+            _pred.load_market_odds(_DATA, d).get(str(g), {}).get("ml_away")) or p)
+            for g, d, p in zip(gids, dates, raw)
+            if g is not None and str(g) in _pred.load_market_odds(_DATA, d)])
+        by = np.array([y for g, d, y in zip(gids, dates, out)
+                       if g is not None and str(g) in _pred.load_market_odds(_DATA, d)])
+        reliability(bp, by, f"Consensus (blended) win%  [{matched} games w/ a line]")
+        bpath = _blend.save(blender, _DATA)
+        print(f"\nBlender fit: a={blender.a:.3f} (model), b={blender.b:.3f} (market), "
+              f"c={blender.c:+.3f}")
+        print(f"Saved market blender -> {bpath}")
+    else:
+        print("Market blender NOT built — too few games with captured market odds.\n"
+              "Run `python -m scripts.backfill_market_odds` first, then rerun.")
 
     # ---- 3-class inning run-bucket calibrator (P0 / P1 / P2+) ----
     print("\n" + "=" * 60 + "\nINNING CALIBRATOR (per-inning P 0 / 1 / 2+ runs)\n" + "=" * 60)
