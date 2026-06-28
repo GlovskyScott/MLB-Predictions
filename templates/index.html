@@ -81,9 +81,14 @@ function renderHeader() {
   document.getElementById('dateLabel').textContent = DATA.dateLabel || '';
   const tabsEl = document.getElementById('tabs');
   // In the game drill-down the tabs are hidden, so drop the header's bottom
-  // border — otherwise it reads as a stray line under the title.
-  document.getElementById('appHeader').style.borderBottom = state.openId !== null ? 'none' : '1px solid #161a22';
-  if (state.openId !== null) { tabsEl.innerHTML = ''; return; }
+  // border — otherwise it reads as a stray line under the title — and add a
+  // little bottom padding the tab row would otherwise provide, so the sticky
+  // header doesn't crowd the content scrolling beneath it.
+  const hdr = document.getElementById('appHeader');
+  const detail = state.openId !== null;
+  hdr.style.borderBottom = detail ? 'none' : '1px solid #161a22';
+  hdr.style.paddingBottom = detail ? '10px' : '0';
+  if (detail) { tabsEl.innerHTML = ''; return; }
   const tab = (key, label) => {
     const on = state.tab === key;
     return `<div class="tap" data-tab="${key}" style="padding-bottom:11px;font:600 13.5px system-ui;color:${on ? '#f1f3f6' : '#5b616d'};border-bottom:2px solid ${on ? ACCENT : 'transparent'};">${label}</div>`;
