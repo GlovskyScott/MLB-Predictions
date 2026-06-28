@@ -73,3 +73,30 @@ def test_spread_and_total_none_without_distribution():
     assert r['ml'] is True
     assert r['spread'] is None
     assert r['total'] is None
+
+
+# ---- pick labels (what the model predicted, for display) --------------------
+
+def test_pick_labels_favorite_minus_1_5_and_over():
+    # home favorite, covers -1.5, total 8 over 7.5
+    core = _core(_point(5), _point(3), home_win_pct=70.0)
+    r = G.grade_markets(core, 5, 3, total_line=7.5, home_abbr='NYY', away_abbr='BOS')
+    assert r['ml_pick'] == 'NYY'
+    assert r['spread_pick'] == 'NYY -1.5'
+    assert r['total_pick'] == 'O 7.5'
+
+
+def test_pick_labels_underdog_plus_1_5_and_under():
+    # home favorite by ML but only ever wins by 1 -> takes the dog +1.5; total 9 < 9.5
+    core = _core(_point(5), _point(4), home_win_pct=70.0)
+    r = G.grade_markets(core, 5, 4, total_line=9.5, home_abbr='NYY', away_abbr='BOS')
+    assert r['ml_pick'] == 'NYY'
+    assert r['spread_pick'] == 'BOS +1.5'      # underdog gets the +1.5
+    assert r['total_pick'] == 'U 9.5'
+
+
+def test_pick_labels_away_favorite_and_no_total_line():
+    core = _core(_point(3), _point(5), home_win_pct=40.0)   # away favored
+    r = G.grade_markets(core, 3, 5, total_line=None, home_abbr='NYY', away_abbr='BOS')
+    assert r['ml_pick'] == 'BOS'
+    assert r['total_pick'] is None             # no captured line -> no total pick

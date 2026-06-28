@@ -619,18 +619,21 @@ def compare_date(result_date: str, version: str = None) -> dict:
         away_err = abs(core.get('median_away_score', 0) - actual_away)
         if actual_home_won == predicted_home_won:
             correct += 1
+        home_meta = get_team_meta(game['home_id'])
+        away_meta = get_team_meta(game['away_id'])
         # Market-by-market grade: ML (== winner_correct), Spread (run-line +/-1.5),
         # Total (vs the captured market line; N/A when no line was snapshotted).
+        # Also returns the pick labels (what the model predicted) for display.
         total_line = market_lines.get(str(core.get('game_id')), {}).get('total_line')
-        marks = _grading.grade_markets(core, actual_home, actual_away, total_line)
+        marks = _grading.grade_markets(
+            core, actual_home, actual_away, total_line,
+            home_abbr=home_meta.get('abbr', 'HOME'), away_abbr=away_meta.get('abbr', 'AWAY'))
         if marks['spread'] is not None:
             spread_n += 1
             spread_correct += 1 if marks['spread'] else 0
         if marks['total'] not in (None, 'push'):
             total_n += 1
             total_correct += 1 if marks['total'] else 0
-        home_meta = get_team_meta(game['home_id'])
-        away_meta = get_team_meta(game['away_id'])
         results.append({
             **game,
             **core,
@@ -644,6 +647,9 @@ def compare_date(result_date: str, version: str = None) -> dict:
             'ml_correct': marks['ml'],
             'spread_correct': marks['spread'],
             'total_correct': marks['total'],
+            'ml_pick': marks['ml_pick'],
+            'spread_pick': marks['spread_pick'],
+            'total_pick': marks['total_pick'],
             'total_line': total_line,
             'home_logo': home_meta['logo_url'],
             'away_logo': away_meta['logo_url'],

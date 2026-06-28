@@ -4,7 +4,18 @@
 {% set to = s.get('total_accuracy') %}
 <div class="summary-stat"><div class="s-label" title="Moneyline: % of games the predicted winner was correct">ML</div><div class="s-value {% if ml is not none and ml >= 55 %}good{% else %}neutral{% endif %}">{% if ml is not none %}{{ ml }}%{% else %}—{% endif %}</div></div>
 <div class="summary-stat"><div class="s-label" title="Run line ±1.5: % of model picks that covered">Spread</div><div class="s-value {% if sp is not none and sp >= 52 %}good{% else %}neutral{% endif %}">{% if sp is not none %}{{ sp }}%{% else %}—{% endif %}</div></div>
-<div class="summary-stat"><div class="s-label" title="Total O/U vs market line: % of model picks correct (pushes excluded)">Total</div><div class="s-value {% if to is not none and to >= 52 %}good{% else %}neutral{% endif %}">{% if to is not none %}{{ to }}%{% else %}—{% endif %}</div></div>
+{# Total only shown once there are graded totals (needs games with a captured market line that have finalized) #}
+{% if to is not none %}<div class="summary-stat"><div class="s-label" title="Total O/U vs market line: % of model picks correct (pushes excluded)">Total</div><div class="s-value {% if to >= 52 %}good{% else %}neutral{% endif %}">{{ to }}%</div></div>{% endif %}
+{%- endmacro %}
+{% macro pick_row(label, pick, result, na_title) -%}
+<div class="pick-row"><span class="pick-mkt">{{ label }}</span>
+{%- if pick %}<span class="pick-lbl">{{ pick }}</span>
+  {%- if result == 'push' %} <span class="pick-res na">P</span>
+  {%- elif result == True %} <span class="pick-res correct">✓</span>
+  {%- elif result == False %} <span class="pick-res wrong">✗</span>
+  {%- else %} <span class="pick-res na" title="{{ na_title }}">·</span>{% endif -%}
+{%- else %}<span class="pick-na" title="{{ na_title }}">—</span>{% endif -%}
+</div>
 {%- endmacro %}
 {% macro inn_bar(cell, color) -%}
 <div class="inn-bar" title="0 runs: {{ cell[0] }}% · 1 run: {{ cell[1] }}% · 2+ runs: {{ cell[2] }}%"><span class="seg0" style="height:{{ cell[0] }}%"></span><span class="seg1" style="height:{{ cell[1] }}%"></span><span class="seg2" style="height:{{ cell[2] }}%"></span></div>
@@ -111,6 +122,13 @@
         .badge { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 10px; font-weight: 700; }
         .badge.correct { background: #1b4d2e; color: #4caf50; }
         .badge.wrong { background: #4d1b1b; color: #ef5350; }
+        .badge.push { background: #333; color: #aaa; }
+        .pick-row { display: flex; align-items: center; gap: 6px; line-height: 1.5; white-space: nowrap; }
+        .pick-mkt { font-size: 9px; color: #555; text-transform: uppercase; width: 30px; flex-shrink: 0; }
+        .pick-lbl { font-size: 11px; font-weight: 700; color: #cfd8e8; }
+        .pick-na { color: #555; }
+        .pick-res { font-size: 11px; font-weight: 800; }
+        .pick-res.correct { color: #4caf50; } .pick-res.wrong { color: #ef5350; } .pick-res.na { color: #555; }
         .err-low { color: #4caf50; font-size: 11px; }
         .err-mid { color: #ffb300; font-size: 11px; }
         .err-high { color: #ef5350; font-size: 11px; }
@@ -498,7 +516,7 @@
         </div>
         {% if yesterday and yesterday.get('n_completed', 0) > 0 %}
         <table class="results-table">
-            <thead><tr><th>Away</th><th>Home</th><th>Actual</th><th title="Most common predicted final score">Pred</th><th></th><th title="Average score error vs actual result">Err</th></tr></thead>
+            <thead><tr><th>Away</th><th>Home</th><th>Actual</th><th title="Most common predicted final score">Pred</th><th title="What the model picked per market, and whether it hit (✓ / ✗ / Push / · no line)">Picks</th><th title="Average score error vs actual result">Err</th></tr></thead>
             <tbody>
             {% for g in yesterday.games %}
                 {% if g.get('error') %}
@@ -515,7 +533,12 @@
                         <div style="font-size:12px;font-weight:700;" title="Most common simulated final score">{{ g.modal_away_score | default(g.median_away_score | round | int) }}–{{ g.modal_home_score | default(g.median_home_score | round | int) }}</div>
                         <div class="sub-text" title="Home team win probability">{{ g.home_win_pct }}% home win</div>
                     </td>
-                    <td>{% if g.winner_correct %}<span class="badge correct">Hit</span>{% else %}<span class="badge wrong">Miss</span>{% endif %}</td>
+                    <td>
+                        {{ pick_row('ML', g.ml_pick, g.ml_correct, '') }}
+                        {{ pick_row('RL', g.spread_pick, g.spread_correct, 'No run-line distribution') }}
+                        {# Total only shown when a market line was captured (never for pre-capture history) #}
+                        {% if g.total_pick %}{{ pick_row('Tot', g.total_pick, g.total_correct, '') }}{% endif %}
+                    </td>
                     <td>{% set err = (g.home_score_err + g.away_score_err) / 2 %}<span class="{% if err <= 1.0 %}err-low{% elif err <= 2.5 %}err-mid{% else %}err-high{% endif %}">±{{ "%.1f"|format(err) }}</span></td>
                 </tr>
                 {% endif %}
