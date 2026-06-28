@@ -97,6 +97,10 @@ def build_blender(pairs, data_dir):
         gid = r.get("game_id")
         if gid is None:
             continue
+        try:                          # parquet round-trips game_id as float (745003.0)
+            gid = int(gid)
+        except (TypeError, ValueError):
+            continue
         date = r["date"]
         if date not in odds_cache:
             odds_cache[date] = _pred.load_market_odds(data_dir, date)
