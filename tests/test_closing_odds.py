@@ -90,7 +90,7 @@ def test_get_historical_moneylines_fatal_status_not_ok():
 
 
 def test_backfill_cluster_caps_snapshots_per_day():
-    from scripts.backfill_closing_odds import cluster
+    from src.closing_backfill import cluster
     # 6 distinct start times spread over 9h, cap at 3 -> must collapse to <= 3 snapshots.
     games = [(f"2024-05-01T{h:02d}:05:00Z", i, "A", "B")
              for i, h in enumerate((17, 18, 20, 21, 23, 1))]  # last wraps next day via sort
@@ -98,3 +98,30 @@ def test_backfill_cluster_caps_snapshots_per_day():
     assert len(cl) <= 3
     # every game lands in exactly one cluster
     assert sum(len(members) for _, members in cl) == len(games)
+
+
+def test_backfill_range_noop_without_key(tmp_path, monkeypatch):
+    monkeypatch.delenv("ODDS_API_KEY", raising=False)
+    from src import closing_backfill as cb
+    assert cb.backfill_range(tmp_path, "2026-06-20", "2026-06-21") == {"used": 0, "captured": 0}
+
+
+def test_backfill_range_captures_and_is_resumable(tmp_path, monkeypatch, mocker):
+    monkeypatch.setenv("ODDS_API_KEY", "x")
+    from src import closing_backfill as cb
+    from src import predictions as P
+    mocker.patch.object(cb, "games_by_date", return_value={
+        "2026-06-20": [("2026-06-20T17:00:00Z", 1, "Red Sox", "Yankees")]})
+    hist = mocker.patch.object(cb, "get_historical_moneylines", return_value=(
+        {cb.market_key("Red Sox", "Yankees"):
+         {"ml_home": -150, "ml_away": 130, "book": "pinnacle"}}, 1000, True))
+
+    r = cb.backfill_range(tmp_path, "2026-06-20", "2026-06-20")
+    assert r["captured"] == 1 and r["used"] == 10
+    assert P.load_closing_odds(tmp_path, "2026-06-20")["1"]["ml_home"] == -150
+
+    # resumable: a second run sees the date in the manifest and never calls the API
+    hist.reset_mock()
+    r2 = cb.backfill_range(tmp_path, "2026-06-20", "2026-06-20")
+    assert r2["used"] == 0
+    hist.assert_not_called()

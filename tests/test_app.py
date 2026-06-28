@@ -344,6 +344,17 @@ def test_archive_pages_render(client, tmp_path, mocker):
     assert b'2026-06-26' in r2.data
 
 
+def test_market_block_applies_edge_threshold():
+    import src.app as app
+    mk = {'ml_home': -110, 'ml_away': -110}            # de-vigged market = 50%
+    small = app._market_block({'home_win_pct': 52.0, 'home_abbr': 'H', 'away_abbr': 'A'}, mk)
+    big = app._market_block({'home_win_pct': 62.0, 'home_abbr': 'H', 'away_abbr': 'A'}, mk)
+    assert small['edge_ml_pct'] == 0      # 2% gap < 5% floor -> not an edge
+    assert small['edge_ml_raw_pct'] == 2  # raw gap preserved
+    assert big['edge_ml_pct'] == 12       # 12% gap >= floor -> shown
+    assert big['edge_ml_side'] == 'H'
+
+
 def test_history_page_shows_results_and_closing_line(client, tmp_path, mocker):
     import src.app as app
     from src import predictions as P

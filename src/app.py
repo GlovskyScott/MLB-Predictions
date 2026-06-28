@@ -303,10 +303,20 @@ def _market_block(game: dict, mk: dict) -> dict:
     ih, ia = _implied_prob(mk.get('ml_home')), _implied_prob(mk.get('ml_away'))
     mkt_home = ih / (ih + ia) if (ih + ia) else 0.5
     ml_edge = model_home_win - mkt_home
+    pct = round(abs(ml_edge) * 100)
     block['edge_ml_side'] = ha if ml_edge >= 0 else aa
-    block['edge_ml_pct'] = round(abs(ml_edge) * 100)
+    # Only surface an edge once it clears the noise floor. Below it, the model-vs-
+    # market gap doesn't reliably beat a sharp close (walk-forward CLV: bets <5%
+    # edge ~breakeven at +1.1%, ≥5% edge +2.2% vs real 2019/21 closes), so showing
+    # those as actionable "edges" over-promises. Sub-threshold -> no edge.
+    block['edge_ml_pct'] = pct if pct >= _EDGE_MIN_PCT else 0
+    block['edge_ml_raw_pct'] = pct          # pre-threshold gap, kept for detail/debug
     return block
 
+
+# Minimum model-vs-market gap (percentage points) to count as an actionable edge.
+# Below this, the gap is within model noise and doesn't beat a sharp close. Tunable.
+_EDGE_MIN_PCT = 5
 
 _EDGE_MARKETS = (('ML', 'edge_ml_side', 'edge_ml_pct'),)
 
@@ -866,6 +876,25 @@ def _track_ui(last_7: dict, last_30: dict, last_90: dict,
     }
 
 
+def _self_heal_closing_odds(days: int = 7) -> None:
+    """Backfill the previous days' real closing lines not yet captured (launch-time).
+
+    'Previous days only' — a true close exists only after a game ends, and the free
+    /odds feed drops finished games, so a past close needs the paid historical
+    endpoint (gated on ODDS_API_KEY; no-op without it). The resumable manifest makes
+    steady state ~yesterday (one cheap day, ~40 credits); a per-launch credit cap
+    bounds the cost if there's a gap.
+    """
+    from datetime import timedelta
+    from src import closing_backfill as _cb
+    end = (date.today() - timedelta(days=1)).strftime('%Y-%m-%d')
+    start = (date.today() - timedelta(days=days)).strftime('%Y-%m-%d')
+    try:
+        _cb.backfill_range(_DATA_DIR, start, end, max_credits=2000)
+    except Exception:
+        pass
+
+
 def create_app(testing: bool = False) -> Flask:
     app = Flask(__name__, template_folder='../templates', static_folder='../static')
     app.config['TESTING'] = testing
@@ -874,6 +903,7 @@ def create_app(testing: bool = False) -> Flask:
         bootstrap_model_cache()
         bootstrap_predictions_cache()
         threading.Thread(target=_backfill_results_cache, daemon=True).start()
+        threading.Thread(target=_self_heal_closing_odds, daemon=True).start()
 
     @app.route('/')
     def index():
