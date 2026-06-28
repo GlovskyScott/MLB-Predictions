@@ -66,6 +66,7 @@ _MODEL_META_FILE = _DATA_DIR / "model_meta.json"
 _EXPLANATIONS_DIR = _DATA_DIR / "explanations"
 _TRAINING_YEARS = [2024, 2025, 2026]
 N_SIMULATIONS = 1000  # fixed sim count for the prediction of record (live + backfill)
+_REFRESH_WINDOW_DAYS = 4  # only re-fetch finals from the live API for dates this recent
 
 _simulation_cache: list[dict] = []
 _last_simulated_date: str = ""
@@ -322,7 +323,11 @@ def _actuals_for_date(result_date: str) -> dict:
     year = int(result_date[:4])
     all_games = get_season_schedule(year)
     games = [g for g in all_games if g.get('game_date') == result_date]
-    if not games or not all(_is_final_game(g) for g in games):
+    # Only hit the live API for dates recent enough that finals could still be
+    # landing. Older dates are settled in the cache — refreshing them would just
+    # add a slow live call per archived date per version (e.g. on /archive).
+    recent = result_date >= (date.today() - timedelta(days=_REFRESH_WINDOW_DAYS)).strftime('%Y-%m-%d')
+    if recent and (not games or not all(_is_final_game(g) for g in games)):
         if refresh_schedule_date(year, result_date) > 0:
             all_games = get_season_schedule(year)
             games = [g for g in all_games if g.get('game_date') == result_date]
