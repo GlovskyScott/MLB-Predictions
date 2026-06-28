@@ -121,5 +121,173 @@ def test_index_handles_no_games(client, mocker):
 def test_retrain_redirects(client, mocker):
     mocker.patch('src.app._get_models', return_value={})
     mocker.patch('src.app._get_inning_model', return_value=None)
+    mocker.patch('src.app._current_version', return_value='v')
+    mocker.patch('src.app._backfill_results_cache')  # don't spawn real re-sim
     response = client.post('/retrain')
     assert response.status_code in (302, 200)
+
+
+# --- Versioned prediction store ---
+
+def test_get_prediction_uses_store_no_resim(tmp_path, mocker):
+    import src.app as app
+    from src import predictions as P
+    mocker.patch.object(app, '_DATA_DIR', tmp_path)
+    mocker.patch.object(app, '_current_version', return_value='vTEST')
+    P.save_prediction(tmp_path, 'vTEST', '2026-06-26',
+                      [{'game_id': 1, 'home_win_pct': 55.0}])
+    sim = mocker.patch('src.app.simulate_game')
+    out = app.get_prediction('2026-06-26')
+    assert out[0]['game_id'] == 1
+    sim.assert_not_called()
+
+
+def test_get_prediction_generates_and_persists_on_miss(tmp_path, mocker):
+    import src.app as app
+    from src import predictions as P
+    mocker.patch.object(app, '_DATA_DIR', tmp_path)
+    mocker.patch.object(app, '_current_version', return_value='vGEN')
+    mocker.patch.object(app, '_get_models', return_value={'win': 1})
+    mocker.patch.object(app, '_get_inning_model', return_value=None)
+    mocker.patch('src.app.get_schedule', return_value=[
+        {'game_id': 7, 'game_date': '2026-06-26', 'home_id': 147, 'away_id': 111,
+         'home_name': 'NYY', 'away_name': 'BOS', 'venue_name': 'YS', 'venue_id': 1,
+         'game_datetime': '2026-06-26T23:05:00Z'}])
+    mocker.patch('src.app.build_game_features', return_value={'elevation_ft': 10})
+    mocker.patch('src.app.get_stadium', return_value={'roof': 'open', 'lat': 40.0, 'lon': -73.0})
+    mocker.patch('src.app.get_weather_for_game', return_value={'is_dome': False})
+    mocker.patch('src.app.predict_game', return_value={
+        'home_win_prob': 0.6, 'away_win_prob': 0.4,
+        'predicted_home_runs': 5.0, 'predicted_away_runs': 3.0})
+    mocker.patch('src.app.simulate_game', return_value={
+        'home_win_pct': 60.0, 'away_win_pct': 40.0,
+        'median_home_score': 5.0, 'median_away_score': 3.0,
+        'modal_home_score': 5, 'modal_away_score': 3, 'predicted_score': '5-3',
+        'score_distribution': {'home': [], 'away': [], 'labels': []},
+        'home_innings_scoring_pct': [], 'away_innings_scoring_pct': [],
+        'home_innings': [], 'away_innings': [], 'n_simulations': 1000})
+
+    out = app.get_prediction('2026-06-26')
+    assert out[0]['game_id'] == 7 and out[0]['home_win_pct'] == 60.0
+    # persisted under the current version
+    assert P.load_prediction(tmp_path, 'vGEN', '2026-06-26')[0]['game_id'] == 7
+
+
+def test_run_daily_simulation_enriches_stored_core(mocker):
+    import src.app as app
+    mocker.patch('src.app.get_prediction', return_value=[{
+        'game_id': 7, 'game_date': '2026-06-26', 'home_id': 147, 'away_id': 111,
+        'home_name': 'NYY', 'away_name': 'BOS', 'home_win_pct': 60.0, 'away_win_pct': 40.0,
+        'predicted_score': '5-3', 'median_home_score': 5.0, 'median_away_score': 3.0}])
+    mocker.patch('src.app.get_schedule', return_value=[{
+        'game_id': 7, 'game_date': '2026-06-26', 'home_id': 147, 'away_id': 111,
+        'home_name': 'NYY', 'away_name': 'BOS', 'venue_id': 1, 'venue_name': 'YS',
+        'game_datetime': '2026-06-26T23:05:00Z',
+        'home_probable_pitcher': 'A', 'away_probable_pitcher': 'B'}])
+    mocker.patch('src.app.build_game_features', return_value={'elevation_ft': 10})
+    mocker.patch('src.app.get_stadium', return_value={'roof': 'open', 'lat': 40.0, 'lon': -73.0})
+    mocker.patch('src.app.get_weather_for_game', return_value={'is_dome': False})
+    mocker.patch('src.app.get_game_lineup', return_value={})
+    mocker.patch('src.app.get_team_meta', return_value={
+        'logo_url': 'L', 'primary': '#132448', 'secondary': '#C4CED4', 'abbr': 'X'})
+
+    out = app.run_daily_simulation('2026-06-26')
+    g = out[0]
+    assert g['home_win_pct'] == 60.0          # from frozen core
+    assert g['home_logo'] == 'L'              # enrichment
+    assert g['weather']['is_dome'] is False   # enrichment
+
+
+def test_compare_date_joins_without_resim(tmp_path, mocker):
+    import src.app as app
+    from src import predictions as P
+    mocker.patch.object(app, '_DATA_DIR', tmp_path)
+    mocker.patch.object(app, '_current_version', return_value='v1')
+    P.save_prediction(tmp_path, 'v1', '2026-06-26', [{
+        'game_id': 1, 'game_date': '2026-06-26', 'home_id': 147, 'away_id': 111,
+        'home_name': 'NYY', 'away_name': 'BOS', 'home_win_pct': 60.0, 'away_win_pct': 40.0,
+        'median_home_score': 5.0, 'median_away_score': 3.0, 'predicted_score': '5-3'}])
+    mocker.patch('src.app.get_season_schedule', return_value=[{
+        'game_id': 1, 'game_date': '2026-06-26', 'status': 'Final',
+        'home_score': 6, 'away_score': 2, 'home_id': 147, 'away_id': 111}])
+    mocker.patch('src.app.refresh_schedule_date', return_value=0)
+    sim = mocker.patch('src.app.simulate_game')
+    mocker.patch('src.app.get_team_meta', return_value={
+        'logo_url': '', 'primary': '#111', 'secondary': '#222', 'abbr': 'X'})
+
+    data = app.compare_date('2026-06-26')
+    assert data['n_completed'] == 1
+    assert data['games'][0]['winner_correct'] is True   # predicted home win, home won
+    assert data['games'][0]['home_score_err'] == 1.0    # |5 - 6|
+    sim.assert_not_called()
+
+
+def test_compare_date_archived_version_no_generate(tmp_path, mocker):
+    import src.app as app
+    from src import predictions as P
+    mocker.patch.object(app, '_DATA_DIR', tmp_path)
+    mocker.patch.object(app, '_current_version', return_value='vCURRENT')
+    # archived version has its own stored prediction
+    P.save_prediction(tmp_path, 'vOLD', '2026-06-26', [{
+        'game_id': 1, 'game_date': '2026-06-26', 'home_id': 147, 'away_id': 111,
+        'home_win_pct': 30.0, 'median_home_score': 2.0, 'median_away_score': 5.0}])
+    mocker.patch('src.app.get_season_schedule', return_value=[{
+        'game_id': 1, 'game_date': '2026-06-26', 'status': 'Final',
+        'home_score': 6, 'away_score': 2, 'home_id': 147, 'away_id': 111}])
+    mocker.patch('src.app.refresh_schedule_date', return_value=0)
+    gp = mocker.patch('src.app.get_prediction')
+    mocker.patch('src.app.get_team_meta', return_value={
+        'logo_url': '', 'primary': '#111', 'secondary': '#222', 'abbr': 'X'})
+
+    data = app.compare_date('2026-06-26', version='vOLD')
+    assert data['games'][0]['winner_correct'] is False  # predicted away (30%<50), home won
+    gp.assert_not_called()  # archived version is frozen — no generate-on-miss
+
+
+def test_retrain_forks_version_and_keeps_archive(client, tmp_path, mocker):
+    import src.app as app
+    from src import predictions as P
+    mocker.patch.object(app, '_DATA_DIR', tmp_path)
+    # live pkls present so _current_version() can hash them
+    for n in ['model_win.pkl', 'model_runs_home.pkl', 'model_runs_away.pkl', 'model_inning.pkl']:
+        (tmp_path / n).write_bytes(b'NEWMODEL')
+    # an archived prior version with a stored prediction
+    P.save_prediction(tmp_path, 'vOLD', '2026-06-26', [{'game_id': 1, 'home_win_pct': 30.0}])
+    mocker.patch('src.app._get_models', return_value={'win': 1})
+    mocker.patch('src.app._get_inning_model', return_value=None)
+    backfill = mocker.patch('src.app._backfill_results_cache')
+
+    resp = client.post('/retrain')
+    assert resp.status_code in (302, 200)
+
+    new_v = P.model_version(tmp_path)
+    versions = [v['version'] for v in P.read_versions(tmp_path)]
+    assert new_v in versions                                   # new version registered
+    assert (tmp_path / 'predictions' / 'vOLD' / '2026-06-26.json').exists()  # archive intact
+    backfill.assert_called_once()                              # re-sim kicked off
+
+
+def test_archive_pages_render(client, tmp_path, mocker):
+    import src.app as app
+    from src import predictions as P
+    mocker.patch.object(app, '_DATA_DIR', tmp_path)
+    mocker.patch.object(app, '_current_version', return_value='vCUR')
+    P.append_version(tmp_path, {'version': 'vCUR', 'created_at': '2026-06-27T00:00:00+00:00',
+                                'feature_version': 4, 'n_games': 5921})
+    P.save_prediction(tmp_path, 'vCUR', '2026-06-26', [{
+        'game_id': 1, 'game_date': '2026-06-26', 'home_id': 147, 'away_id': 111,
+        'home_name': 'NYY', 'away_name': 'BOS', 'home_win_pct': 60.0,
+        'median_home_score': 5.0, 'median_away_score': 3.0, 'predicted_score': '5-3'}])
+    mocker.patch('src.app.get_season_schedule', return_value=[{
+        'game_id': 1, 'game_date': '2026-06-26', 'status': 'Final',
+        'home_score': 6, 'away_score': 2, 'home_id': 147, 'away_id': 111}])
+    mocker.patch('src.app.refresh_schedule_date', return_value=0)
+    mocker.patch('src.app.get_team_meta', return_value={
+        'logo_url': '', 'primary': '#111', 'secondary': '#222', 'abbr': 'X'})
+
+    r1 = client.get('/archive')
+    assert r1.status_code == 200
+    assert b'vCUR' in r1.data
+    r2 = client.get('/archive/vCUR')
+    assert r2.status_code == 200
+    assert b'2026-06-26' in r2.data

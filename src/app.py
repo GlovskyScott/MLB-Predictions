@@ -10,9 +10,9 @@ from src.fetcher import (
     get_schedule, get_pitching_stats, get_team_batting_stats,
     get_bullpen_stats, get_season_schedule, get_weather_for_game, get_game_linescore,
     get_game_lineup, bootstrap_data_cache, bootstrap_model_cache,
-    refresh_schedule_date,
+    bootstrap_predictions_cache, refresh_schedule_date,
 )
-from src.features import build_game_features, build_inning_feature_row, _NEUTRAL_WEATHER, FEATURE_VERSION
+from src.features import build_game_features, build_inning_feature_row, _NEUTRAL_WEATHER, FEATURE_VERSION, FEATURE_COLUMNS
 from src.model import (
     train_models, load_models, models_exist, predict_game, build_training_data,
     train_inning_model, load_inning_model, inning_model_exists, predict_inning_probs,
@@ -20,6 +20,8 @@ from src.model import (
 from src.simulator import simulate_game
 from src.stadiums import get_stadium
 from src.teams import get_team_meta
+from src import predictions as _pred
+from datetime import datetime, timezone
 
 _DATA_DIR = Path(__file__).parent.parent / "data"
 
@@ -61,9 +63,10 @@ def _bar_color(primary: str, secondary: str) -> str:
 
 
 _MODEL_META_FILE = _DATA_DIR / "model_meta.json"
-_RESULTS_CACHE_DIR = _DATA_DIR / "results_cache"
 _EXPLANATIONS_DIR = _DATA_DIR / "explanations"
 _TRAINING_YEARS = [2024, 2025, 2026]
+N_SIMULATIONS = 1000  # fixed sim count for the prediction of record (live + backfill)
+_REFRESH_WINDOW_DAYS = 4  # only re-fetch finals from the live API for dates this recent
 
 _simulation_cache: list[dict] = []
 _last_simulated_date: str = ""
@@ -71,6 +74,7 @@ _models_cache: dict = {}
 _inning_model_cache = None
 _results_cache: dict = {}
 _last_results_date: str = ""
+_actuals_cache: dict = {}  # settled date -> {game_id: final game}; avoids redundant live refreshes
 
 
 def _read_model_meta() -> dict:
@@ -190,39 +194,52 @@ def _get_inning_model(force_retrain: bool = False):
     return _inning_model_cache
 
 
-def run_daily_simulation(sim_date: str = None, n_simulations: int = 1000) -> list[dict]:
-    if sim_date is None:
-        sim_date = date.today().strftime('%Y-%m-%d')
+def _current_version() -> str | None:
+    """Version id of the live model pkls. Registers it on first sight.
 
-    models = _get_models()
-    inning_model = _get_inning_model()
-    games = get_schedule(sim_date)
-    results = []
+    Naming rule: a model's name is v<major>.<build>, where major is the feature
+    generation it trains on (FEATURE_VERSION) and build increments from 0 for
+    each new model at that generation. So a retrain bumps the build (v4.0 ->
+    v4.1) and a new feature set bumps the major and resets the build (-> v5.0).
+    """
+    v = _pred.model_version(_DATA_DIR)
+    if v and not any(e.get('version') == v for e in _pred.read_versions(_DATA_DIR)):
+        major = FEATURE_VERSION
+        build = _pred.next_build(_DATA_DIR, major)
+        _pred.append_version(_DATA_DIR, {
+            'version': v,
+            'name': f'v{major}.{build}',
+            'major': major,
+            'created_at': datetime.now(timezone.utc).isoformat(),
+            'features': len(FEATURE_COLUMNS),
+            **_read_model_meta(),
+        })
+    return v
 
-    for game in games:
+
+def _simulate_core_for_date(sim_date: str, models, inning_model) -> list[dict]:
+    """Generate the deterministic prediction core for every game on sim_date.
+
+    Used by both the live "today" path and the backfill, so the artifact shown
+    live is byte-for-byte what later appears under "yesterday".
+    """
+    cores = []
+    for game in get_schedule(sim_date):
         try:
             features = build_game_features(game, year=2026)
             stadium = get_stadium(game['home_id']) or {}
             is_dome = stadium.get('roof') == 'dome'
-
             weather = get_weather_for_game(
-                lat=stadium.get('lat', 39.0),
-                lon=stadium.get('lon', -95.0),
-                game_datetime=game.get('game_datetime', ''),
-                is_dome=is_dome,
+                lat=stadium.get('lat', 39.0), lon=stadium.get('lon', -95.0),
+                game_datetime=game.get('game_datetime', ''), is_dome=is_dome,
             )
-
             if models:
                 prediction = predict_game(features, models)
             else:
-                prediction = {
-                    'home_win_prob': 0.5, 'away_win_prob': 0.5,
-                    'predicted_home_runs': 4.5, 'predicted_away_runs': 4.2,
-                }
-
-            sim = simulate_game(prediction, n_simulations=n_simulations)
-
-            # Override simulation-derived inning scoring pcts with ML model predictions
+                prediction = {'home_win_prob': 0.5, 'away_win_prob': 0.5,
+                              'predicted_home_runs': 4.5, 'predicted_away_runs': 4.2}
+            sim = simulate_game(prediction, n_simulations=N_SIMULATIONS,
+                                seed=game['game_id'] % 100000)
             if inning_model:
                 try:
                     inning_probs = predict_inning_probs(features, inning_model)
@@ -230,113 +247,165 @@ def run_daily_simulation(sim_date: str = None, n_simulations: int = 1000) -> lis
                     sim['away_innings_scoring_pct'] = inning_probs['away']
                 except Exception:
                     pass
-            home_meta = get_team_meta(game['home_id'])
-            away_meta = get_team_meta(game['away_id'])
-            lineup = get_game_lineup(game.get('game_id'))
-            results.append({
-                **game,
-                **sim,
-                'weather': weather,
-                'lineup': lineup,
-                'features': features,
-                'elevation_ft': int(features.get('elevation_ft', 0)),
-                'home_pitcher': game.get('home_probable_pitcher', 'TBD'),
-                'away_pitcher': game.get('away_probable_pitcher', 'TBD'),
-                'home_logo': home_meta['logo_url'],
-                'away_logo': away_meta['logo_url'],
-                'home_color': home_meta['primary'],
-                'away_color': away_meta['primary'],
-                'home_color2': home_meta['secondary'],
-                'away_color2': away_meta['secondary'],
-                'home_abbr': home_meta['abbr'],
-                'away_abbr': away_meta['abbr'],
-                'home_color_rgb': _hex_to_rgb_str(home_meta['primary']),
-                'away_color_rgb': _hex_to_rgb_str(away_meta['primary']),
-                'home_bar_color': _bar_color(home_meta['primary'], home_meta['secondary']),
-                'away_bar_color': _bar_color(away_meta['primary'], away_meta['secondary']),
-            })
+            cores.append(_pred.extract_core({**game, **sim}))
+        except Exception:
+            continue
+    return cores
+
+
+def get_prediction(sim_date: str) -> list[dict]:
+    """Return the frozen prediction core for sim_date under the current version.
+
+    Served verbatim if it exists; otherwise simulated once, persisted, returned.
+    Never re-simulates a date that already has a stored prediction.
+    """
+    version = _current_version()
+    if version:
+        stored = _pred.load_prediction(_DATA_DIR, version, sim_date)
+        if stored is not None:
+            return stored
+    cores = _simulate_core_for_date(sim_date, _get_models(), _get_inning_model())
+    if version:
+        _pred.save_prediction(_DATA_DIR, version, sim_date, cores)
+    return cores
+
+
+def _enrich_game(game: dict, core: dict) -> dict:
+    """Combine a schedule game shell with its frozen prediction core and the
+    presentation/context fields (weather, lineup, features, logos, colors) that
+    are re-derived at render time rather than persisted in the artifact."""
+    features = build_game_features(game, year=2026)
+    stadium = get_stadium(game['home_id']) or {}
+    is_dome = stadium.get('roof') == 'dome'
+    weather = get_weather_for_game(
+        lat=stadium.get('lat', 39.0), lon=stadium.get('lon', -95.0),
+        game_datetime=game.get('game_datetime', ''), is_dome=is_dome,
+    )
+    home_meta = get_team_meta(game['home_id'])
+    away_meta = get_team_meta(game['away_id'])
+    lineup = get_game_lineup(game.get('game_id'))
+    return {
+        **game,
+        **core,
+        'weather': weather,
+        'lineup': lineup,
+        'features': features,
+        'elevation_ft': int(features.get('elevation_ft', 0)),
+        'home_pitcher': game.get('home_probable_pitcher', 'TBD'),
+        'away_pitcher': game.get('away_probable_pitcher', 'TBD'),
+        'home_logo': home_meta['logo_url'],
+        'away_logo': away_meta['logo_url'],
+        'home_color': home_meta['primary'],
+        'away_color': away_meta['primary'],
+        'home_color2': home_meta['secondary'],
+        'away_color2': away_meta['secondary'],
+        'home_abbr': home_meta['abbr'],
+        'away_abbr': away_meta['abbr'],
+        'home_color_rgb': _hex_to_rgb_str(home_meta['primary']),
+        'away_color_rgb': _hex_to_rgb_str(away_meta['primary']),
+        'home_bar_color': _bar_color(home_meta['primary'], home_meta['secondary']),
+        'away_bar_color': _bar_color(away_meta['primary'], away_meta['secondary']),
+    }
+
+
+def run_daily_simulation(sim_date: str = None, n_simulations: int = 1000) -> list[dict]:
+    if sim_date is None:
+        sim_date = date.today().strftime('%Y-%m-%d')
+
+    cores = {c['game_id']: c for c in get_prediction(sim_date)}
+    results = []
+    for game in get_schedule(sim_date):
+        try:
+            results.append(_enrich_game(game, cores.get(game['game_id'], {})))
         except Exception as e:
             results.append({**game, 'error': str(e)})
 
     return results
 
 
-def run_results_comparison(result_date: str, n_simulations: int = 500) -> dict:
-    models = _get_models()
+def _is_final_game(g) -> bool:
+    return (g.get('status') == 'Final'
+            and g.get('home_score') is not None and not pd.isna(g.get('home_score'))
+            and g.get('away_score') is not None and not pd.isna(g.get('away_score')))
+
+
+def _actuals_for_date(result_date: str) -> dict:
+    """Return {game_id: game} for FINAL games on result_date, refreshing the
+    cached schedule from the live API when it isn't fully final yet."""
+    cached = _actuals_cache.get(result_date)
+    if cached is not None:
+        return cached
     year = int(result_date[:4])
-    # Use disk-cached season schedule for past dates — avoids a live API call per day
     all_games = get_season_schedule(year)
     games = [g for g in all_games if g.get('game_date') == result_date]
-
-    def _is_final(g):
-        return (g.get('status') == 'Final'
-                and g.get('home_score') is not None and not pd.isna(g.get('home_score'))
-                and g.get('away_score') is not None and not pd.isna(g.get('away_score')))
-
-    # The cached schedule may have been snapshotted before this date's games
-    # finished, leaving them without final scores. When any game for the date
-    # isn't final yet, refresh that date from the live API and reload from cache.
-    if not games or not all(_is_final(g) for g in games):
+    if not games or not all(_is_final_game(g) for g in games):
         if refresh_schedule_date(year, result_date) > 0:
             all_games = get_season_schedule(year)
             games = [g for g in all_games if g.get('game_date') == result_date]
         if not games:
             games = get_schedule(result_date)  # fallback for today/future
-    completed = [g for g in games if _is_final(g)]
+    actuals = {g['game_id']: g for g in games if _is_final_game(g)}
+    # Memoize settled (older than the refresh window) dates: their finals never
+    # change, so the live refresh + join runs once per process instead of once
+    # per archived date per model version (e.g. /archive grades every version).
+    if result_date < (date.today() - timedelta(days=_REFRESH_WINDOW_DAYS)).strftime('%Y-%m-%d'):
+        _actuals_cache[result_date] = actuals
+    return actuals
 
+
+def compare_date(result_date: str, version: str = None) -> dict:
+    """Join the frozen prediction for result_date with actual finals — no sim.
+
+    For the current version, generates-on-miss; for an archived version, reads
+    only what is stored (frozen). Accuracy is computed from the stored core's
+    win% and median scores, so it never changes unless the model version does.
+    """
+    current = _current_version()
+    if version is None:
+        version = current
+    if version == current:
+        cores = get_prediction(result_date)
+    else:
+        cores = _pred.load_prediction(_DATA_DIR, version, result_date) or []
+
+    actuals = _actuals_for_date(result_date)
     results = []
-    correct_winner = 0
+    correct = 0
+    for core in cores:
+        game = actuals.get(core.get('game_id'))
+        if not game:
+            continue  # not final yet — no comparison row
+        actual_home = int(game['home_score'])
+        actual_away = int(game['away_score'])
+        actual_home_won = actual_home > actual_away
+        predicted_home_won = core.get('home_win_pct', 50.0) > 50.0
+        home_err = abs(core.get('median_home_score', 0) - actual_home)
+        away_err = abs(core.get('median_away_score', 0) - actual_away)
+        if actual_home_won == predicted_home_won:
+            correct += 1
+        home_meta = get_team_meta(game['home_id'])
+        away_meta = get_team_meta(game['away_id'])
+        results.append({
+            **game,
+            **core,
+            'actual_home_score': actual_home,
+            'actual_away_score': actual_away,
+            'actual_home_won': actual_home_won,
+            'predicted_home_won': predicted_home_won,
+            'home_score_err': round(home_err, 1),
+            'away_score_err': round(away_err, 1),
+            'winner_correct': actual_home_won == predicted_home_won,
+            'home_logo': home_meta['logo_url'],
+            'away_logo': away_meta['logo_url'],
+            'home_color': home_meta['primary'],
+            'away_color': away_meta['primary'],
+            'home_color2': home_meta['secondary'],
+            'away_color2': away_meta['secondary'],
+        })
 
-    for game in completed:
-        try:
-            features = build_game_features(game, year=2026, for_training=True)
-            if models:
-                prediction = predict_game(features, models)
-            else:
-                prediction = {
-                    'home_win_prob': 0.5, 'away_win_prob': 0.5,
-                    'predicted_home_runs': 4.5, 'predicted_away_runs': 4.2,
-                }
-
-            sim = simulate_game(prediction, n_simulations=n_simulations, seed=game['game_id'] % 10000)
-            home_meta = get_team_meta(game['home_id'])
-            away_meta = get_team_meta(game['away_id'])
-
-            actual_home = int(game['home_score'])
-            actual_away = int(game['away_score'])
-            actual_home_won = actual_home > actual_away
-            predicted_home_won = sim['home_win_pct'] > 50.0
-
-            home_score_err = abs(sim['median_home_score'] - actual_home)
-            away_score_err = abs(sim['median_away_score'] - actual_away)
-
-            if actual_home_won == predicted_home_won:
-                correct_winner += 1
-
-            results.append({
-                **game,
-                **sim,
-                'actual_home_score': actual_home,
-                'actual_away_score': actual_away,
-                'actual_home_won': actual_home_won,
-                'predicted_home_won': predicted_home_won,
-                'home_score_err': round(home_score_err, 1),
-                'away_score_err': round(away_score_err, 1),
-                'winner_correct': actual_home_won == predicted_home_won,
-                'home_logo': home_meta['logo_url'],
-                'away_logo': away_meta['logo_url'],
-                'home_color': home_meta['primary'],
-                'away_color': away_meta['primary'],
-                'home_color2': home_meta['secondary'],
-                'away_color2': away_meta['secondary'],
-            })
-        except Exception as e:
-            results.append({**game, 'error': str(e),
-                            'actual_home_score': game.get('home_score'),
-                            'actual_away_score': game.get('away_score')})
-
-    accuracy = round(correct_winner / len(completed) * 100, 1) if completed else 0
-    scored = [r for r in results if not r.get('error') and 'home_score_err' in r]
+    n = len(results)
+    accuracy = round(correct / n * 100, 1) if n else 0
+    scored = [r for r in results if 'home_score_err' in r]
     avg_err = round(
         sum(r['home_score_err'] + r['away_score_err'] for r in scored) / (2 * len(scored)), 2
     ) if scored else None
@@ -344,44 +413,38 @@ def run_results_comparison(result_date: str, n_simulations: int = 500) -> dict:
     return {
         'result_date': result_date,
         'games': results,
-        'n_completed': len(completed),
+        'n_completed': n,
         'winner_accuracy': accuracy,
         'avg_score_err': avg_err,
     }
 
 
 def _get_results_for_date(date_str: str) -> dict:
-    """Return results for a past date, using disk cache to avoid re-simulation."""
-    _RESULTS_CACHE_DIR.mkdir(exist_ok=True)
-    cache_file = _RESULTS_CACHE_DIR / f"{date_str}.json"
-    if cache_file.exists():
-        return json.loads(cache_file.read_text())
-    data = run_results_comparison(date_str, n_simulations=200)
-    if data.get('n_completed', 0) > 0:
-        cache_file.write_text(json.dumps(data, default=str))
-    return data
+    """Results for a past date by joining the frozen prediction with actuals."""
+    return compare_date(date_str)
 
 
-def _aggregate_days(n_days: int) -> dict:
-    """Aggregate prediction accuracy across the past n_days using parallel disk-cached fetches.
+def _aggregate_days(n_days: int, version: str = None) -> dict:
+    """Aggregate accuracy across the past n_days for a model version.
 
-    Only reads dates that already have a disk cache — never triggers live computation.
-    This keeps the index page fast on first load.
+    Only joins dates that already have a stored prediction for the version, so
+    the page never triggers simulation on load — generation happens in the
+    backfill thread.
     """
+    if version is None:
+        version = _current_version()
     dates = [
         (date.today() - timedelta(days=i)).strftime('%Y-%m-%d')
         for i in range(1, n_days + 1)
     ]
-
-    # Only process dates that are already cached on disk
-    cached_dates = [
-        d for d in dates
-        if (_RESULTS_CACHE_DIR / f"{d}.json").exists()
-    ]
+    ready = (
+        [d for d in dates if _pred.load_prediction(_DATA_DIR, version, d) is not None]
+        if version else []
+    )
 
     daily = []
     with ThreadPoolExecutor(max_workers=6) as pool:
-        futures = {pool.submit(_get_results_for_date, d): d for d in cached_dates}
+        futures = {pool.submit(compare_date, d, version): d for d in ready}
         for fut in as_completed(futures):
             try:
                 r = fut.result()
@@ -411,32 +474,56 @@ def _aggregate_days(n_days: int) -> dict:
     }
 
 
+def _version_summary(version: str) -> dict:
+    """Aggregate accuracy across every date stored for a model version (all of
+    its history, not just the last 90 days). Used by the archive pages."""
+    daily = []
+    for d in _pred.list_dates(_DATA_DIR, version):
+        try:
+            r = compare_date(d, version)
+            if r.get('n_completed', 0) > 0:
+                daily.append(r)
+        except Exception:
+            pass
+    daily.sort(key=lambda x: x['result_date'], reverse=True)
+    total = sum(r['n_completed'] for r in daily)
+    correct = sum(round(r['winner_accuracy'] / 100 * r['n_completed']) for r in daily)
+    accuracy = round(correct / total * 100, 1) if total else 0
+    scored = [r for r in daily if r.get('avg_score_err') is not None]
+    avg_err = round(sum(r['avg_score_err'] for r in scored) / len(scored), 2) if scored else None
+    return {
+        'total_games': total,
+        'days_with_games': len(daily),
+        'winner_accuracy': accuracy,
+        'avg_score_err': avg_err,
+        'daily': daily,
+    }
+
+
 def _backfill_one(d: str) -> None:
-    cache_file = _RESULTS_CACHE_DIR / f"{d}.json"
-    if cache_file.exists():
-        return
+    """Ensure a stored prediction exists for date d under the current version."""
     try:
-        data = run_results_comparison(d, n_simulations=100)
-        if data.get('n_completed', 0) > 0:
-            cache_file.write_text(json.dumps(data, default=str))
+        get_prediction(d)  # no-op if already stored; generates + persists on miss
     except Exception:
         pass
 
 
 def _backfill_results_cache(n_days: int = 90) -> None:
-    """Populate results_cache for the last n_days using parallel workers.
-
-    Runs after app startup so the index page loads immediately. Each completed
-    date is written to disk; subsequent app restarts skip already-cached dates.
+    """Generate-and-persist predictions for the last n_days under the current
+    model version, using parallel workers. Runs after startup (and after a
+    retrain) so the index loads immediately; already-stored dates are skipped.
     """
-    _RESULTS_CACHE_DIR.mkdir(exist_ok=True)
+    version = _current_version()
     dates = [
         (date.today() - timedelta(days=i)).strftime('%Y-%m-%d')
         for i in range(1, n_days + 1)
-        if not (_RESULTS_CACHE_DIR / f"{(date.today() - timedelta(days=i)).strftime('%Y-%m-%d')}.json").exists()
+    ]
+    todo = [
+        d for d in dates
+        if not version or _pred.load_prediction(_DATA_DIR, version, d) is None
     ]
     with ThreadPoolExecutor(max_workers=6) as pool:
-        pool.map(_backfill_one, dates)
+        pool.map(_backfill_one, todo)
 
 
 _OLLAMA_URL = "http://localhost:11434/api/generate"
@@ -582,6 +669,7 @@ def create_app(testing: bool = False) -> Flask:
     if not testing:
         bootstrap_data_cache()
         bootstrap_model_cache()
+        bootstrap_predictions_cache()
         threading.Thread(target=_backfill_results_cache, daemon=True).start()
 
     @app.route('/')
@@ -606,12 +694,15 @@ def create_app(testing: bool = False) -> Flask:
         last_7 = _aggregate_days(7)
         last_30 = _aggregate_days(90)
         meta = _read_model_meta()
+        cur = _current_version()
+        model_name = next((e.get('name') for e in _pred.read_versions(_DATA_DIR)
+                           if e.get('version') == cur), None) or f"v{meta.get('feature_version', '?')}"
 
         return render_template('index.html',
                                results=_simulation_cache, sim_date=today,
                                yesterday=_results_cache, yesterday_date=yesterday,
                                last_7=last_7, last_30=last_30,
-                               model_version=meta.get('feature_version', '?'),
+                               model_name=model_name,
                                model_n_games=meta.get('n_games', '?'),
                                model_years=meta.get('training_years', []))
 
@@ -627,12 +718,47 @@ def create_app(testing: bool = False) -> Flask:
 
     @app.route('/retrain', methods=['POST'])
     def retrain():
-        global _models_cache, _inning_model_cache
+        global _models_cache, _inning_model_cache, _simulation_cache
+        global _last_simulated_date, _results_cache
         _models_cache = {}
         _inning_model_cache = None
         _get_models(force_retrain=True)
         _get_inning_model(force_retrain=True)
+        # New pkls -> new version. Register it (archives the prior version's
+        # prediction folder by leaving it intact) and re-sim today + 90 days
+        # under the new version in the background.
+        _current_version()
+        _simulation_cache = []
+        _last_simulated_date = ""
+        _results_cache = {}
+        threading.Thread(target=_backfill_results_cache, args=(90,), daemon=True).start()
         return redirect(url_for('index'))
+
+    @app.route('/archive')
+    def archive():
+        current = _current_version()
+        rows = []
+        for v in _pred.read_versions(_DATA_DIR):
+            s = _version_summary(v['version'])
+            rows.append({
+                **v,
+                'total_games': s['total_games'],
+                'days_with_games': s['days_with_games'],
+                'winner_accuracy': s['winner_accuracy'],
+                'avg_score_err': s['avg_score_err'],
+                'is_current': v['version'] == current,
+            })
+        # Newest first by training/registration time (registry order is not relied on).
+        rows.sort(key=lambda r: r.get('created_at', ''), reverse=True)
+        return render_template('archive.html', versions=rows)
+
+    @app.route('/archive/<version>')
+    def archive_version(version: str):
+        meta = next((v for v in _pred.read_versions(_DATA_DIR)
+                     if v['version'] == version), {'version': version})
+        summary = _version_summary(version)
+        return render_template('archive_version.html', version=version, meta=meta,
+                               summary=summary, is_current=(version == _current_version()))
 
     @app.route('/explain/<int:game_id>')
     def explain(game_id: int):

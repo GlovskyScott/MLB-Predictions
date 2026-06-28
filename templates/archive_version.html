@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Model {{ version }} — MLB Simulator</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a0a; color: #e8e8e8; }
+        header { display: flex; align-items: center; justify-content: space-between; padding: 14px 22px; border-bottom: 1px solid #1a1a1a; }
+        a { color: #4a9eff; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .wrap { padding: 22px; max-width: 1100px; margin: 0 auto; }
+        .summary { display: flex; gap: 26px; margin-bottom: 20px; }
+        .stat .v { font-size: 22px; font-weight: 700; }
+        .stat .l { font-size: 11px; color: #777; text-transform: uppercase; letter-spacing: .04em; }
+        .acc { color: #5dd47e; }
+        table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        thead th { background: #1a1a1a; padding: 8px 12px; color: #777; text-align: left; white-space: nowrap; border-bottom: 1px solid #222; }
+        tbody td { padding: 8px 12px; border-top: 1px solid #1a1a1a; vertical-align: middle; }
+        .date-row td { background: #121212; font-weight: 600; color: #aaa; }
+        .ok { color: #5dd47e; } .no { color: #e06b6b; }
+        .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+        .muted { color: #777; }
+        .tag { font-size: 10px; padding: 2px 6px; border-radius: 4px; background: #1a6fd4; color: #fff; margin-left: 6px; }
+    </style>
+</head>
+<body>
+<header>
+    <div style="font-size:17px;font-weight:700;">
+        Model {{ meta.name or version }}
+        <span class="mono muted" style="font-size:11px">{{ version }}</span>
+        {% if is_current %}<span class="tag">current</span>{% endif %}
+    </div>
+    <a href="/archive">← All versions</a>
+</header>
+<div class="wrap">
+    <div class="summary">
+        <div class="stat"><div class="v acc">{% if summary.total_games %}{{ summary.winner_accuracy }}%{% else %}—{% endif %}</div><div class="l">Accuracy</div></div>
+        <div class="stat"><div class="v">{{ summary.total_games }}</div><div class="l">Graded games</div></div>
+        <div class="stat"><div class="v">{% if summary.avg_score_err is not none %}±{{ summary.avg_score_err }}{% else %}—{% endif %}</div><div class="l">Avg err</div></div>
+        <div class="stat"><div class="v">{{ summary.days_with_games }}</div><div class="l">Days</div></div>
+        <div class="stat"><div class="v muted">{% if meta.features %}{{ meta.features }}-feat{% elif meta.feature_version == 4 %}44-feat{% else %}?{% endif %}</div><div class="l">Features</div></div>
+    </div>
+
+    {% if not summary.daily %}
+        <p class="muted">No graded games for this version yet.</p>
+    {% else %}
+    <table>
+        <thead>
+            <tr><th>Away</th><th>Home</th><th>Actual</th><th>Predicted</th><th>Win%</th><th>Err</th><th>✓</th></tr>
+        </thead>
+        <tbody>
+        {% for day in summary.daily %}
+            <tr class="date-row"><td colspan="7">{{ day.result_date }} · {{ day.n_completed }} games · {{ day.winner_accuracy }}%</td></tr>
+            {% for g in day.games %}
+            <tr>
+                <td>{{ g.away_name }}</td>
+                <td>{{ g.home_name }}</td>
+                <td>{{ g.actual_away_score }}–{{ g.actual_home_score }}</td>
+                <td class="muted">{{ g.predicted_score }}</td>
+                <td>{{ g.home_win_pct }}%</td>
+                <td>±{{ ((g.home_score_err + g.away_score_err) / 2) | round(1) }}</td>
+                <td class="{{ 'ok' if g.winner_correct else 'no' }}">{{ '✓' if g.winner_correct else '✗' }}</td>
+            </tr>
+            {% endfor %}
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+</div>
+</body>
+</html>
