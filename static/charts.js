@@ -39,6 +39,7 @@ function renderScoreDistribution(canvasId, homeData, awayData, labels, homeName,
         options: {
             responsive: true,
             maintainAspectRatio: false,
+            animation: false,  // synchronous render — reliable for lazy expand + print
             plugins: {
                 legend: { position: 'top', labels: { color: '#888', font: { size: 11 } } },
                 tooltip: { callbacks: { label: c => c.dataset.label + ': ' + c.parsed.y + '% of sims' } }

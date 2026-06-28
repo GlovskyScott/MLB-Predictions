@@ -348,6 +348,45 @@ def _market_block(game: dict, mk: dict) -> dict:
     return block
 
 
+_EDGE_MARKETS = (('ML', 'edge_ml_side', 'edge_ml_pct'),
+                 ('Total', 'edge_total_side', 'edge_total_pct'),
+                 ('Run line', 'edge_rl_side', 'edge_rl_pct'))
+
+
+def _best_edge(market: dict) -> dict | None:
+    """The single biggest model-vs-market edge for a game: {market, side, pct}.
+
+    None when there is no market block or no priced edge."""
+    if not market:
+        return None
+    cands = [(label, market.get(sk), market.get(pk)) for label, sk, pk in _EDGE_MARKETS]
+    cands = [(label, s, p) for label, s, p in cands if s and p]
+    if not cands:
+        return None
+    label, side, pct = max(cands, key=lambda c: c[2])
+    return {'market': label, 'side': side, 'pct': pct}
+
+
+def _top_edges(games: list, n: int = 6) -> list[dict]:
+    """Flatten every game's ML/total/run-line edges, rank by %, return the top n.
+
+    Each entry: {game_id, matchup, market, side, pct}. Games without a market
+    block (no ESPN odds) are skipped."""
+    out = []
+    for g in games:
+        mk = g.get('market')
+        if not mk:
+            continue
+        matchup = f"{g.get('away_abbr', '?')} @ {g.get('home_abbr', '?')}"
+        for label, sk, pk in _EDGE_MARKETS:
+            side, pct = mk.get(sk), mk.get(pk)
+            if side and pct:
+                out.append({'game_id': g.get('game_id'), 'matchup': matchup,
+                            'market': label, 'side': side, 'pct': pct})
+    out.sort(key=lambda e: e['pct'], reverse=True)
+    return out[:n]
+
+
 def run_daily_simulation(sim_date: str = None) -> list[dict]:
     if sim_date is None:
         sim_date = date.today().strftime('%Y-%m-%d')
@@ -360,6 +399,7 @@ def run_daily_simulation(sim_date: str = None) -> list[dict]:
             g = _enrich_game(game, cores.get(game['game_id'], {}))
             mk = market.get(market_key(g.get('away_name', ''), g.get('home_name', '')))
             g['market'] = _market_block(g, mk) if mk else None
+            g['best_edge'] = _best_edge(g['market'])
             results.append(g)
         except Exception as e:
             results.append({**game, 'error': str(e)})
@@ -725,6 +765,7 @@ def create_app(testing: bool = False) -> Flask:
 
         return render_template('index.html',
                                results=_simulation_cache, sim_date=today,
+                               top_edges=_top_edges(_simulation_cache),
                                yesterday=_results_cache, yesterday_date=yesterday,
                                last_7=last_7, last_90=last_90,
                                model_name=model_name,
