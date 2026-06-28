@@ -42,9 +42,10 @@
         <tbody>
         {% for v in versions %}
             <tr>
-                <td class="mono">
-                    <a href="/archive/{{ v.version }}">{{ v.version }}</a>
-                    <span class="tag" style="background:#444">{{ v.release if v.release else ('v' ~ v.feature_version if v.feature_version is not none else 'legacy') }}</span>
+                <td>
+                    <a href="/archive/{{ v.version }}" style="font-weight:700">{{ v.name or v.version }}</a>
+                    <span class="mono muted" style="font-size:10px;margin-left:4px">{{ v.version }}</span>
+                    {% if v.release %}<span class="tag" style="background:#333">{{ v.release }}</span>{% endif %}
                     {% if v.is_current %}<span class="tag">current</span>{% endif %}
                 </td>
                 <td class="muted">{{ (v.created_at or '')[:10] }}</td>

@@ -43,6 +43,8 @@ def main() -> None:
     ap.add_argument("--created-at", required=True)
     ap.add_argument("--features", type=int, required=True)
     ap.add_argument("--n-games", type=int, required=True)
+    ap.add_argument("--major", type=int, required=True,
+                    help="feature generation for the v<major>.<build> name")
     ap.add_argument("--data-dir", type=Path, default=_DATA_DIR)
     args = ap.parse_args()
 
@@ -54,8 +56,12 @@ def main() -> None:
         shutil.copy2(f, dest / f.name)
         n += 1
 
+    build = P.next_build(args.data_dir, args.major)
+    name = f"v{args.major}.{build}"
     P.append_version(args.data_dir, {
         "version": version,
+        "name": name,
+        "major": args.major,
         "created_at": args.created_at,
         "release": args.release,
         "feature_version": None,      # predates FEATURE_VERSION numbering
@@ -63,7 +69,7 @@ def main() -> None:
         "n_games": args.n_games,
         "training_years": [2024, 2025, 2026],
     })
-    print(f"Registered {args.release} as version {version} with {n} dates.")
+    print(f"Registered {args.release} as {name} (version {version}) with {n} dates.")
 
 
 if __name__ == "__main__":

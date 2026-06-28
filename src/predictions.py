@@ -69,6 +69,12 @@ def append_version(data_dir, entry: dict) -> None:
     f.write_text(json.dumps(versions, indent=2))
 
 
+def next_build(data_dir, major) -> int:
+    """Next build index for a feature generation: the count of already-registered
+    versions whose major matches. Drives the v<major>.<build> naming rule."""
+    return sum(1 for v in read_versions(data_dir) if v.get('major') == major)
+
+
 def load_prediction(data_dir, version: str, date: str):
     """Return the stored prediction core list for (version, date), or None."""
     f = _pred_dir(data_dir) / version / f'{date}.json'

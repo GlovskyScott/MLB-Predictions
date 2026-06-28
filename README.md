@@ -202,6 +202,25 @@ Fetches real temperature, wind, precipitation, and humidity for every completed 
 Predictions are **immutable artifacts keyed by model version**. A version id is a
 hash of the four model `.pkl` files, so any retrain produces a new version.
 
+**Version naming rule — `v<major>.<build>`:**
+
+- **major** = the feature generation the model trains on (the `FEATURE_VERSION`
+  constant — currently `4`, the 44-feature set). Older 32-feature releases are
+  generation `1`.
+- **build** = increments from `0` for each new model trained at that generation.
+
+A retrain at the same feature set bumps the build (`v4.0 → v4.1`); changing the
+feature set bumps the major and resets the build (`→ v5.0`). Names are assigned
+once at registration and never change. The opaque pkl hash remains the storage
+key; the `name`/`major` live alongside it in `versions.json`.
+
+| Name | Model | Features |
+|---|---|---|
+| `v1.0` | `947baaba` (was release v1.0.0) | 32 |
+| `v1.1` | `6c70da42` (was release v1.1.0) | 32 |
+| `v4.0` | `672d9a30` (released `latest`) | 44 |
+| `v4.1` | `15dac968` (retrain) | 44 |
+
 - Within a version, a date's prediction is generated once, frozen to
   `data/predictions/<version>/<date>.json`, and served verbatim forever after —
   the dashboard never re-simulates a stored date.

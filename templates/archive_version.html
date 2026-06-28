@@ -28,8 +28,9 @@
 <body>
 <header>
     <div style="font-size:17px;font-weight:700;">
-        Model <span class="mono">{{ version }}</span>
-        <span class="tag" style="background:#444">{{ meta.release if meta.release else ('v' ~ meta.feature_version if meta.feature_version is not none else 'legacy') }}</span>
+        Model {{ meta.name or version }}
+        <span class="mono muted" style="font-size:11px">{{ version }}</span>
+        {% if meta.release %}<span class="tag" style="background:#333">{{ meta.release }}</span>{% endif %}
         {% if is_current %}<span class="tag">current</span>{% endif %}
     </div>
     <a href="/archive">← All versions</a>

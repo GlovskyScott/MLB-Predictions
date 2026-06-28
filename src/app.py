@@ -195,11 +195,21 @@ def _get_inning_model(force_retrain: bool = False):
 
 
 def _current_version() -> str | None:
-    """Version id of the live model pkls. Registers it on first sight."""
+    """Version id of the live model pkls. Registers it on first sight.
+
+    Naming rule: a model's name is v<major>.<build>, where major is the feature
+    generation it trains on (FEATURE_VERSION) and build increments from 0 for
+    each new model at that generation. So a retrain bumps the build (v4.0 ->
+    v4.1) and a new feature set bumps the major and resets the build (-> v5.0).
+    """
     v = _pred.model_version(_DATA_DIR)
     if v and not any(e.get('version') == v for e in _pred.read_versions(_DATA_DIR)):
+        major = FEATURE_VERSION
+        build = _pred.next_build(_DATA_DIR, major)
         _pred.append_version(_DATA_DIR, {
             'version': v,
+            'name': f'v{major}.{build}',
+            'major': major,
             'created_at': datetime.now(timezone.utc).isoformat(),
             'features': len(FEATURE_COLUMNS),
             **_read_model_meta(),

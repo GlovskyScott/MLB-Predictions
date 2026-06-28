@@ -47,3 +47,13 @@ def test_extract_core_keeps_only_fields():
     core = P.extract_core({'game_id': 1, 'home_win_pct': 60.0, 'home_logo': 'x', 'weather': {}})
     assert 'home_logo' not in core and 'weather' not in core
     assert core['game_id'] == 1
+
+
+def test_next_build_counts_per_major(tmp_path):
+    assert P.next_build(tmp_path, 4) == 0
+    P.append_version(tmp_path, {'version': 'a', 'major': 4})
+    P.append_version(tmp_path, {'version': 'b', 'major': 4})
+    P.append_version(tmp_path, {'version': 'c', 'major': 1})
+    assert P.next_build(tmp_path, 4) == 2   # -> next would be v4.2
+    assert P.next_build(tmp_path, 1) == 1   # -> next would be v1.1
+    assert P.next_build(tmp_path, 5) == 0   # new feature gen starts at .0
