@@ -107,6 +107,12 @@ _LINESCORE_CACHE_FILE = _DATA_DIR / "linescore_cache.csv"
 _linescore_cache: dict = {}  # game_pk → {home: [9 ints], away: [9 ints]}
 _linescore_cache_lock = threading.Lock()
 
+# Guards the lazy "load whole disk cache into memory" routines below. The
+# backfill / inning-training run 6–20 parallel workers that would otherwise race
+# the check-then-load and each parse the CSV. (Per-key dict writes elsewhere are
+# single ops and rely on the GIL for atomicity.)
+_cache_load_lock = threading.Lock()
+
 _season_schedule_memory: dict = {}  # year → list[dict], prevents repeated CSV reads
 
 _pitcher_splits_cache: dict = {}  # (player_name_lower, year) → splits dict
@@ -142,6 +148,13 @@ def _load_weather_cache() -> None:
     global _weather_cache
     if _weather_cache or not _WEATHER_CACHE_FILE.exists():
         return
+    with _cache_load_lock:
+        if _weather_cache:  # another thread loaded it while we waited
+            return
+        _load_weather_cache_locked()
+
+
+def _load_weather_cache_locked() -> None:
     df = pd.read_csv(_WEATHER_CACHE_FILE)
     for _, row in df.iterrows():
         # Skip entries missing humidity — they were cached before this field was added;
@@ -602,6 +615,13 @@ def _load_linescore_cache() -> None:
     global _linescore_cache
     if _linescore_cache or not _LINESCORE_CACHE_FILE.exists():
         return
+    with _cache_load_lock:
+        if _linescore_cache:  # another thread loaded it while we waited
+            return
+        _load_linescore_cache_locked()
+
+
+def _load_linescore_cache_locked() -> None:
     try:
         df = pd.read_csv(_LINESCORE_CACHE_FILE)
         for _, row in df.iterrows():
