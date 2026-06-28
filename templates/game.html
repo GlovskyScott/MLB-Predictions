@@ -168,7 +168,7 @@
     <div class="section">
         <h2>Game Conditions</h2>
         {% if game.weather.is_dome %}
-        <p style="color:#888;">🏟️ Indoor — climate-controlled dome</p>
+        <p style="color:#888;">Indoor — climate-controlled dome</p>
         {% else %}
         <div class="stat-grid">
             <div class="stat-item"><label>Temperature</label><div class="value">{{ game.weather.temperature_f|round|int }}°F</div></div>

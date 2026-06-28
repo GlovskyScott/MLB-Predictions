@@ -159,12 +159,12 @@
         <div class="date-badge">{{ sim_date }}</div>
     </div>
     <div class="header-actions">
-        <a href="/archive" class="btn btn-secondary" style="text-decoration:none;display:inline-block;">▤ Archive</a>
+        <a href="/archive" class="btn btn-secondary" style="text-decoration:none;display:inline-block;">Archive</a>
         <form action="/refresh" method="post" style="display:inline">
-            <button class="btn btn-primary" type="submit">↻ Refresh</button>
+            <button class="btn btn-primary" type="submit">Refresh</button>
         </form>
         <form action="/retrain" method="post" style="display:inline">
-            <button class="btn btn-secondary" type="submit">⚙ Retrain</button>
+            <button class="btn btn-secondary" type="submit">Retrain</button>
         </form>
     </div>
 </header>
@@ -317,9 +317,9 @@
             <div class="ai-head">
                 <span class="subsection-label" style="margin:0;">AI Analysis</span>
                 <button class="discuss-btn" type="button"
-                        onclick="discussGame({{ r.game_id }}, '{{ r.away_abbr }} @ {{ r.home_abbr }}')">💬 Discuss</button>
+                        onclick="discussGame({{ r.game_id }}, '{{ r.away_abbr }} @ {{ r.home_abbr }}')">Discuss</button>
             </div>
-            <div class="explain-box" id="explain-{{ r.game_id }}"><span class="explain-queued">⏳ In queue for analysis…</span></div>
+            <div class="explain-box" id="explain-{{ r.game_id }}"><span class="explain-queued">In queue for analysis…</span></div>
 
             {% if r.lineup and (r.lineup.get('home') or r.lineup.get('away')) %}
             <div class="subsection-label" style="margin-top:10px;">Lineup</div>
@@ -384,7 +384,7 @@
                         <div style="font-size:12px;font-weight:700;" title="Most common simulated final score">{{ g.modal_away_score | default(g.median_away_score | round | int) }}–{{ g.modal_home_score | default(g.median_home_score | round | int) }}</div>
                         <div class="sub-text" title="Home team win probability">{{ g.home_win_pct }}% home win</div>
                     </td>
-                    <td>{% if g.winner_correct %}<span class="badge correct">✓</span>{% else %}<span class="badge wrong">✗</span>{% endif %}</td>
+                    <td>{% if g.winner_correct %}<span class="badge correct">Hit</span>{% else %}<span class="badge wrong">Miss</span>{% endif %}</td>
                     <td>{% set err = (g.home_score_err + g.away_score_err) / 2 %}<span class="{% if err <= 1.0 %}err-low{% elif err <= 2.5 %}err-mid{% else %}err-high{% endif %}">±{{ "%.1f"|format(err) }}</span></td>
                 </tr>
                 {% endif %}
@@ -502,7 +502,7 @@ function streamExplanation(gameId, onDone) {
     const box = document.getElementById('explain-' + gameId);
     if (!box) { if (onDone) onDone(); return; }
 
-    box.innerHTML = '<span class="explain-queued">⏳ Generating analysis…</span>';
+    box.innerHTML = '<span class="explain-queued">Generating analysis…</span>';
     let hasText = false;
 
     const evtSource = new EventSource('/explain/' + gameId);
@@ -515,7 +515,7 @@ function streamExplanation(gameId, onDone) {
         try {
             const chunk = JSON.parse(e.data);
             if (chunk.error) {
-                box.textContent = '⚠ ' + chunk.error;
+                box.textContent = chunk.error;
                 evtSource.close();
                 if (onDone) onDone();
             } else if (chunk.text) {
@@ -526,7 +526,7 @@ function streamExplanation(gameId, onDone) {
     };
     evtSource.onerror = function () {
         evtSource.close();
-        if (!hasText) box.textContent = '⚠ Could not reach Ollama — make sure it is running.';
+        if (!hasText) box.textContent = 'Could not reach Ollama — make sure it is running.';
         if (onDone) onDone();
     };
 }
@@ -562,7 +562,7 @@ function discussGame(gameId, label) {
     chatFocusGame = { id: gameId, label: label };
     const fb = document.getElementById('chat-focus');
     fb.style.display = 'flex';
-    fb.querySelector('.chat-focus-label').textContent = '💬 ' + label;
+    fb.querySelector('.chat-focus-label').textContent = label;
     toggleChat(true);
     chatSend('Give me a quick rundown of this game and the biggest edge the model sees vs the market.');
 }
@@ -570,7 +570,7 @@ function discussGame(gameId, label) {
 function renderChat() {
     const box = document.getElementById('chat-msgs');
     if (!chatMessages.length) {
-        box.innerHTML = '<div class="chat-empty">Ask me about today\'s games, the betting edges vs ESPN, recent accuracy, or how the model works. Or hit <b>💬 Discuss</b> on any game.</div>';
+        box.innerHTML = '<div class="chat-empty">Ask me about today\'s games, the betting edges vs ESPN, recent accuracy, or how the model works. Or hit <b>Discuss</b> on any game.</div>';
         return;
     }
     box.innerHTML = '';
@@ -614,20 +614,20 @@ async function chatSend(text) {
             bot.content += dec.decode(value, { stream: true });
             renderChat();
         }
-        if (!bot.content) { bot.content = '⚠ No response — is Ollama running?'; renderChat(); }
+        if (!bot.content) { bot.content = 'No response — is Ollama running?'; renderChat(); }
     } catch (err) {
-        bot.content = '⚠ ' + err; renderChat();
+        bot.content = 'Error: ' + err; renderChat();
     } finally {
         chatBusy = false;
     }
 }
 </script>
 
-<button id="chat-fab" onclick="toggleChat()" title="Ask the assistant">💬 Ask</button>
+<button id="chat-fab" onclick="toggleChat()" title="Ask the assistant">Ask</button>
 <div id="chat-panel" class="chat-panel" style="display:none">
     <div class="chat-head">
-        <span>⚾ Dashboard Assistant</span>
-        <button class="chat-x" onclick="toggleChat(false)" title="Close">✕</button>
+        <span>Dashboard Assistant</span>
+        <button class="chat-x" onclick="toggleChat(false)" title="Close">×</button>
     </div>
     <div id="chat-focus" class="chat-focus" style="display:none">
         <span class="chat-focus-label"></span>

@@ -44,4 +44,4 @@ def stream_chat(messages: list, context: str):
             if chunk.get("done"):
                 return
     except Exception as exc:
-        yield f"\n\n⚠ Couldn't reach Ollama ({exc}). Make sure it's running (`ollama serve`)."
+        yield f"\n\nCouldn't reach Ollama ({exc}). Make sure it's running (`ollama serve`)."
