@@ -26,7 +26,6 @@ from src.colors import hex_to_rgb_str as _hex_to_rgb_str, bar_color as _bar_colo
 from src.explanations import (
     _explanation_cache, _load_disk_explanations, _build_explain_prompt,
     _stream_ollama, _pregenerate_explanations,
-    _stream_picks, _pregenerate_picks, _load_disk_picks,
 )
 from src.training import (
     get_models as _get_models, get_inning_model as _get_inning_model,
@@ -230,73 +229,82 @@ def _enrich_game(game: dict, core: dict) -> dict:
     }
 
 
-def _market_compare(game: dict, mk: dict) -> dict:
-    """Format averaged market odds for display and flag where the model disagrees."""
-    def odds(v):
-        return f"{int(round(v)):+d}" if v is not None else '—'
+def _implied_prob(odds, default=-110):
+    """De-vig-free implied probability of a single American price (default -110)."""
+    o = odds if odds is not None else default
+    return (-o) / ((-o) + 100) if o < 0 else 100 / (o + 100)
 
-    lines = game.get('lines') or {}
-    out = {
+
+def _fmt_american(v, default=None):
+    v = v if v is not None else default
+    return f"{int(round(v)):+d}" if v is not None else '—'
+
+
+def _market_block(game: dict, mk: dict) -> dict:
+    """Format the averaged ESPN line (with -110 defaults where a price is missing)
+    and compute the model's edge % per market — the model's probability minus the
+    market's de-vigged implied probability, shown on the side the model favors."""
+    from collections import defaultdict
+
+    # Model run-margin + total distributions, by convolving the per-team score
+    # histograms (the sim draws each team's runs independently).
+    dist = game.get('score_distribution') or {}
+    hc, ac = dist.get('home') or [], dist.get('away') or []
+    hsum, asum = sum(hc), sum(ac)
+    margin, total = defaultdict(float), defaultdict(float)
+    if hsum and asum:
+        hp, ap = [c / hsum for c in hc], [c / asum for c in ac]
+        for h, ph in enumerate(hp):
+            if ph:
+                for a, pa in enumerate(ap):
+                    if pa:
+                        margin[h - a] += ph * pa
+                        total[h + a] += ph * pa
+    model_home_win = game.get('home_win_pct', 50.0) / 100.0
+    fav_home = model_home_win >= 0.5
+    ha, aa = game.get('home_abbr'), game.get('away_abbr')
+
+    block = {
+        'ml_home': _fmt_american(mk.get('ml_home')),
+        'ml_away': _fmt_american(mk.get('ml_away')),
         'total': f"{mk['total']:.1f}" if mk.get('total') is not None else '—',
-        'over_odds': odds(mk.get('over_odds')), 'under_odds': odds(mk.get('under_odds')),
-        'ml_home': odds(mk.get('ml_home')), 'ml_away': odds(mk.get('ml_away')),
-        'n_books': mk.get('n_books', 0), 'total_edge': None, 'ml_edge': None,
-    }
-    # Total edge: model's total line vs the market number.
-    try:
-        diff = float(lines.get('total_line')) - float(mk['total'])
-        if abs(diff) >= 0.5:
-            out['total_edge'] = f"model {'OVER' if diff > 0 else 'UNDER'} {abs(diff):.1f}"
-    except (TypeError, ValueError):
-        pass
-    # Moneyline edge: model and market favor different sides.
-    mh, ma = mk.get('ml_home'), mk.get('ml_away')
-    if mh is not None and ma is not None:
-        model_fav_home = game.get('home_win_pct', 50) >= game.get('away_win_pct', 50)
-        if (mh < ma) != model_fav_home:
-            out['ml_edge'] = f"model likes {game.get('home_abbr') if model_fav_home else game.get('away_abbr')}"
-    return out
-
-
-def _edge_metrics(game: dict, mk: dict) -> dict | None:
-    """Numeric model-vs-market comparison + an edge score, for ranking 'Picks'."""
-    lines = game.get('lines') or {}
-    try:
-        model_total = float(lines.get('total_line'))
-    except (TypeError, ValueError):
-        model_total = None
-    mkt_total = mk.get('total')
-    if model_total is None or mkt_total is None:
-        return None
-
-    def implied(ml):
-        if ml is None:
-            return None
-        return (-ml) / ((-ml) + 100) if ml < 0 else 100 / (ml + 100)
-
-    ih, ia = implied(mk.get('ml_home')), implied(mk.get('ml_away'))
-    mkt_home_win = ih / (ih + ia) if (ih and ia) else None        # de-vigged
-    model_home_win = game.get('home_win_pct', 50) / 100.0
-    model_fav_home = model_home_win >= 0.5
-    mkt_fav_home = mkt_home_win >= 0.5 if mkt_home_win is not None else model_fav_home
-    ml_prob_edge = abs(model_home_win - mkt_home_win) if mkt_home_win is not None else 0.0
-    total_diff = model_total - mkt_total
-    return {
-        'away_abbr': game.get('away_abbr'), 'home_abbr': game.get('home_abbr'),
-        'model_total': model_total, 'mkt_total': mkt_total, 'total_diff': total_diff,
-        'model_home_win': model_home_win * 100,
-        'model_fav': game.get('home_abbr') if model_fav_home else game.get('away_abbr'),
-        'mkt_fav': game.get('home_abbr') if mkt_fav_home else game.get('away_abbr'),
-        'fav_disagree': model_fav_home != mkt_fav_home,
-        'score': abs(total_diff) + 3.0 * ml_prob_edge + (1.0 if model_fav_home != mkt_fav_home else 0.0),
+        'total_over': _fmt_american(mk.get('over_odds'), default=-110),
+        'total_under': _fmt_american(mk.get('under_odds'), default=-110),
+        'runline_odds': '-110',   # ESPN gives the ±1.5 line but no price
+        'n_books': mk.get('n_books', 0),
     }
 
+    # Moneyline edge — model win% vs the de-vigged market.
+    ih, ia = _implied_prob(mk.get('ml_home')), _implied_prob(mk.get('ml_away'))
+    mkt_home = ih / (ih + ia) if (ih + ia) else 0.5
+    ml_edge = model_home_win - mkt_home
+    block['edge_ml_side'] = ha if ml_edge >= 0 else aa
+    block['edge_ml_pct'] = round(abs(ml_edge) * 100)
 
-def _picks_payload(games: list, top: int = 4) -> list:
-    """The day's strongest model-vs-market edges, ranked, for the Picks summary."""
-    edges = [g['edge'] for g in games if g.get('edge')]
-    edges.sort(key=lambda e: e['score'], reverse=True)
-    return edges[:top]
+    # Total edge — model P(over) at the MARKET line vs the de-vigged market over.
+    line = mk.get('total')
+    if line is not None and total:
+        po = sum(p for t, p in total.items() if t > line)
+        pu = sum(p for t, p in total.items() if t < line)
+        model_over = po / (po + pu) if (po + pu) else 0.5
+        io, iu = _implied_prob(mk.get('over_odds')), _implied_prob(mk.get('under_odds'))
+        mkt_over = io / (io + iu) if (io + iu) else 0.5
+        t_edge = model_over - mkt_over
+        block['edge_total_side'] = 'Over' if t_edge >= 0 else 'Under'
+        block['edge_total_pct'] = round(abs(t_edge) * 100)
+    else:
+        block['edge_total_side'], block['edge_total_pct'] = '', None
+
+    # Run-line edge — model P(favorite wins by >=2) vs the market (-110 -> 50%).
+    if margin:
+        p_cover = sum(p for d, p in margin.items() if (d >= 2 if fav_home else d <= -2))
+        rl_edge = p_cover - 0.5
+        fav, dog = (ha, aa) if fav_home else (aa, ha)
+        block['edge_rl_side'] = f"{fav} -1.5" if rl_edge >= 0 else f"{dog} +1.5"
+        block['edge_rl_pct'] = round(abs(rl_edge) * 100)
+    else:
+        block['edge_rl_side'], block['edge_rl_pct'] = '', None
+    return block
 
 
 def run_daily_simulation(sim_date: str = None) -> list[dict]:
@@ -310,8 +318,7 @@ def run_daily_simulation(sim_date: str = None) -> list[dict]:
         try:
             g = _enrich_game(game, cores.get(game['game_id'], {}))
             mk = market.get(market_key(g.get('away_name', ''), g.get('home_name', '')))
-            g['market'] = _market_compare(g, mk) if mk else None
-            g['edge'] = _edge_metrics(g, mk) if mk else None
+            g['market'] = _market_block(g, mk) if mk else None
             results.append(g)
         except Exception as e:
             results.append({**game, 'error': str(e)})
@@ -565,9 +572,6 @@ def create_app(testing: bool = False) -> Flask:
             _last_simulated_date = today
             _load_disk_explanations(today)
             threading.Thread(target=_pregenerate_explanations, args=(_simulation_cache, today), daemon=True).start()
-            edges = _picks_payload(_simulation_cache)
-            if edges:
-                threading.Thread(target=_pregenerate_picks, args=(edges, today), daemon=True).start()
 
         if not _results_cache or _last_results_date != yesterday:
             try:
@@ -588,7 +592,6 @@ def create_app(testing: bool = False) -> Flask:
                                yesterday=_results_cache, yesterday_date=yesterday,
                                last_7=last_7, last_90=last_90,
                                model_name=model_name,
-                               has_picks=bool(_picks_payload(_simulation_cache)),
                                model_n_games=meta.get('n_games', '?'),
                                model_years=meta.get('training_years', []))
 
@@ -647,19 +650,6 @@ def create_app(testing: bool = False) -> Flask:
         summary = _version_summary(version)
         return render_template('archive_version.html', version=version, meta=meta,
                                summary=summary, is_current=(version == _current_version()))
-
-    @app.route('/picks')
-    def picks():
-        today = date.today().strftime('%Y-%m-%d')
-        edges = _picks_payload(_simulation_cache)
-        headers = {'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'}
-        if not edges:
-            def _none():
-                yield f"data: {json.dumps({'text': 'No standout edges vs the market today.'})}\n\n"
-                yield "data: [DONE]\n\n"
-            return Response(stream_with_context(_none()), mimetype='text/event-stream', headers=headers)
-        return Response(stream_with_context(_stream_picks(edges, today)),
-                        mimetype='text/event-stream', headers=headers)
 
     @app.route('/explain/<int:game_id>')
     def explain(game_id: int):
