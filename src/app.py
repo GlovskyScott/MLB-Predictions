@@ -11,6 +11,7 @@ from src.fetcher import (
     get_bullpen_stats, get_season_schedule, get_weather_for_game, get_game_linescore,
     get_game_lineup, bootstrap_data_cache, bootstrap_model_cache,
     bootstrap_predictions_cache, refresh_schedule_date,
+    get_market_odds, market_key,
 )
 from src.features import build_game_features, build_inning_feature_row, _NEUTRAL_WEATHER, FEATURE_VERSION, FEATURE_COLUMNS
 from src.model import (
@@ -228,15 +229,47 @@ def _enrich_game(game: dict, core: dict) -> dict:
     }
 
 
+def _market_compare(game: dict, mk: dict) -> dict:
+    """Format averaged market odds for display and flag where the model disagrees."""
+    def odds(v):
+        return f"{int(round(v)):+d}" if v is not None else '—'
+
+    lines = game.get('lines') or {}
+    out = {
+        'total': f"{mk['total']:.1f}" if mk.get('total') is not None else '—',
+        'over_odds': odds(mk.get('over_odds')), 'under_odds': odds(mk.get('under_odds')),
+        'ml_home': odds(mk.get('ml_home')), 'ml_away': odds(mk.get('ml_away')),
+        'n_books': mk.get('n_books', 0), 'total_edge': None, 'ml_edge': None,
+    }
+    # Total edge: model's total line vs the market number.
+    try:
+        diff = float(lines.get('total_line')) - float(mk['total'])
+        if abs(diff) >= 0.5:
+            out['total_edge'] = f"model {'OVER' if diff > 0 else 'UNDER'} {abs(diff):.1f}"
+    except (TypeError, ValueError):
+        pass
+    # Moneyline edge: model and market favor different sides.
+    mh, ma = mk.get('ml_home'), mk.get('ml_away')
+    if mh is not None and ma is not None:
+        model_fav_home = game.get('home_win_pct', 50) >= game.get('away_win_pct', 50)
+        if (mh < ma) != model_fav_home:
+            out['ml_edge'] = f"model likes {game.get('home_abbr') if model_fav_home else game.get('away_abbr')}"
+    return out
+
+
 def run_daily_simulation(sim_date: str = None) -> list[dict]:
     if sim_date is None:
         sim_date = date.today().strftime('%Y-%m-%d')
 
     cores = {c['game_id']: c for c in get_prediction(sim_date)}
+    market = get_market_odds(sim_date)
     results = []
     for game in get_schedule(sim_date):
         try:
-            results.append(_enrich_game(game, cores.get(game['game_id'], {})))
+            g = _enrich_game(game, cores.get(game['game_id'], {}))
+            mk = market.get(market_key(g.get('away_name', ''), g.get('home_name', '')))
+            g['market'] = _market_compare(g, mk) if mk else None
+            results.append(g)
         except Exception as e:
             results.append({**game, 'error': str(e)})
 

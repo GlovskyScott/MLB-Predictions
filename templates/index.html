@@ -35,10 +35,15 @@
         .score-nums { font-size: 22px; font-weight: 900; letter-spacing: 2px; color: #fff; }
         .score-label { font-size: 9px; color: #444; margin-top: 1px; }
         .card-prob { padding: 0 12px 8px; }
-        .lines-strip { display: flex; justify-content: space-around; gap: 8px; padding: 8px 12px; margin: 0 12px 8px; background: #0e0e0e; border: 1px solid #1e1e1e; border-radius: 6px; }
-        .line-item { text-align: center; flex: 1; }
-        .line-label { font-size: 9px; font-weight: 700; color: #555; text-transform: uppercase; letter-spacing: 0.6px; }
-        .line-val { font-size: 12px; font-weight: 700; color: #d8d8d8; margin-top: 2px; white-space: nowrap; }
+        .odds-block { margin: 0 12px 8px; background: #0e0e0e; border: 1px solid #1e1e1e; border-radius: 6px; padding: 4px 8px; }
+        .odds-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+        .odds-table th { font-size: 9px; font-weight: 700; color: #555; text-transform: uppercase; letter-spacing: 0.5px; text-align: left; padding: 3px 4px; }
+        .odds-table td { padding: 3px 4px; color: #d8d8d8; white-space: nowrap; }
+        .odds-team { font-weight: 800; color: #fff; }
+        .odds-mkt td { color: #888; border-top: 1px solid #1c1c1c; }
+        .odds-mkt .odds-team { color: #888; font-weight: 700; }
+        .odds-edge { margin-top: 4px; display: flex; gap: 6px; flex-wrap: wrap; }
+        .edge-badge { font-size: 10px; font-weight: 700; color: #5dd47e; background: #14331f; border: 1px solid #1f5132; border-radius: 4px; padding: 1px 6px; }
         .card-detail { border-top: 1px solid #1e1e1e; padding: 10px 12px; }
         .detail-meta { display: flex; justify-content: space-between; font-size: 10px; color: #666; margin-bottom: 8px; gap: 4px; flex-wrap: wrap; }
         .chart-container { height: 220px; position: relative; margin-bottom: 6px; }
@@ -195,22 +200,36 @@
         </script>
 
         {% if r.lines %}
-        <div class="lines-strip" title="Model-implied fair lines (no vig), from the simulation">
-            <div class="line-item">
-                <div class="line-label">Run line</div>
-                <div class="line-val">{{ r.away_abbr }} {{ r.lines.spread_away }}</div>
-                <div class="line-val">{{ r.home_abbr }} {{ r.lines.spread_home }}</div>
+        <div class="odds-block">
+            <table class="odds-table">
+                <tr class="odds-head"><th></th><th>Run line</th><th>Total</th><th>ML</th></tr>
+                <tr>
+                    <td class="odds-team">{{ r.away_abbr }}</td>
+                    <td>{{ r.lines.spread_away }}</td>
+                    <td>O {{ r.lines.total_line }} {{ r.lines.total_over }}</td>
+                    <td>{{ r.lines.ml_away }}</td>
+                </tr>
+                <tr>
+                    <td class="odds-team">{{ r.home_abbr }}</td>
+                    <td>{{ r.lines.spread_home }}</td>
+                    <td>U {{ r.lines.total_line }} {{ r.lines.total_under }}</td>
+                    <td>{{ r.lines.ml_home }}</td>
+                </tr>
+                {% if r.market %}
+                <tr class="odds-mkt" title="Average sportsbook line ({{ r.market.n_books }} book{{ 's' if r.market.n_books != 1 }}, via ESPN)">
+                    <td class="odds-team">Mkt</td>
+                    <td>±1.5</td>
+                    <td>{{ r.market.total }}</td>
+                    <td>{{ r.away_abbr }} {{ r.market.ml_away }} · {{ r.home_abbr }} {{ r.market.ml_home }}</td>
+                </tr>
+                {% endif %}
+            </table>
+            {% if r.market and (r.market.total_edge or r.market.ml_edge) %}
+            <div class="odds-edge">
+                {% if r.market.total_edge %}<span class="edge-badge">▲ {{ r.market.total_edge }}</span>{% endif %}
+                {% if r.market.ml_edge %}<span class="edge-badge">★ {{ r.market.ml_edge }}</span>{% endif %}
             </div>
-            <div class="line-item">
-                <div class="line-label">Total {{ r.lines.total_line }}</div>
-                <div class="line-val">O {{ r.lines.total_over }}</div>
-                <div class="line-val">U {{ r.lines.total_under }}</div>
-            </div>
-            <div class="line-item">
-                <div class="line-label">Moneyline</div>
-                <div class="line-val">{{ r.away_abbr }} {{ r.lines.ml_away }}</div>
-                <div class="line-val">{{ r.home_abbr }} {{ r.lines.ml_home }}</div>
-            </div>
+            {% endif %}
         </div>
         {% endif %}
 

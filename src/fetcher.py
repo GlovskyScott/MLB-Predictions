@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import requests
 import threading
+import time
 from pathlib import Path
 from datetime import date
 
@@ -906,3 +907,73 @@ def get_weather_for_game(lat: float, lon: float, game_datetime: str, is_dome: bo
             'humidity_pct': 50.0,
             'is_dome': False,
         }
+
+
+# ---------------------------------------------------------------------------
+# Market betting odds (ESPN public scoreboard — free, no auth)
+# ---------------------------------------------------------------------------
+
+_ESPN_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard"
+_ESPN_SUMMARY = "https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/summary"
+_MARKET_ODDS_TTL = 600  # seconds; book lines move slowly intraday
+_market_odds_cache: dict = {}  # game_date -> (fetched_at, {key: odds})
+
+
+def market_key(away_name: str, home_name: str) -> tuple:
+    """Normalized (away, home) team-name key used to match a game to its odds."""
+    def norm(n):
+        return ''.join(ch for ch in str(n).lower() if ch.isalnum())
+    return (norm(away_name), norm(home_name))
+
+
+def _avg(values) -> float | None:
+    vals = [float(v) for v in values if v is not None]
+    return sum(vals) / len(vals) if vals else None
+
+
+def _fetch_event_market(event: dict) -> dict | None:
+    """Average the books' lines for one ESPN event from its pickcenter."""
+    try:
+        comp = event['competitions'][0]
+        names = {c['homeAway']: c['team'].get('displayName') for c in comp['competitors']}
+        pc = requests.get(_ESPN_SUMMARY, params={'event': event['id']}, timeout=6).json().get('pickcenter', [])
+    except Exception:
+        return None
+    if not pc or not names.get('home') or not names.get('away'):
+        return None
+    return {
+        'away_name': names['away'], 'home_name': names['home'],
+        'total': _avg(o.get('overUnder') for o in pc),
+        'over_odds': _avg(o.get('overOdds') for o in pc),
+        'under_odds': _avg(o.get('underOdds') for o in pc),
+        'ml_home': _avg(o.get('homeTeamOdds', {}).get('moneyLine') for o in pc),
+        'ml_away': _avg(o.get('awayTeamOdds', {}).get('moneyLine') for o in pc),
+        'n_books': len(pc),
+    }
+
+
+def get_market_odds(game_date: str) -> dict:
+    """Average sportsbook lines per game for game_date via ESPN's public API.
+
+    No API key / auth. Returns {market_key(away, home): {total, over_odds,
+    under_odds, ml_home, ml_away, n_books}}. Cached per date (short TTL) and
+    parallelized over events. Returns {} on any failure — the feature degrades
+    gracefully (the dashboard just shows the model's lines without a market row).
+    """
+    now = time.time()
+    cached = _market_odds_cache.get(game_date)
+    if cached and now - cached[0] < _MARKET_ODDS_TTL:
+        return cached[1]
+    out = {}
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+        sb = requests.get(_ESPN_SCOREBOARD, params={'dates': game_date.replace('-', '')}, timeout=8).json()
+        events = sb.get('events', [])
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            for m in pool.map(_fetch_event_market, events):
+                if m:
+                    out[market_key(m['away_name'], m['home_name'])] = m
+    except Exception:
+        pass
+    _market_odds_cache[game_date] = (now, out)
+    return out

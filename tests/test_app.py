@@ -175,6 +175,7 @@ def test_get_prediction_generates_and_persists_on_miss(tmp_path, mocker):
 
 def test_run_daily_simulation_enriches_stored_core(mocker):
     import src.app as app
+    mocker.patch('src.app.get_market_odds', return_value={})  # no live ESPN call
     mocker.patch('src.app.get_prediction', return_value=[{
         'game_id': 7, 'game_date': '2026-06-26', 'home_id': 147, 'away_id': 111,
         'home_name': 'NYY', 'away_name': 'BOS', 'home_win_pct': 60.0, 'away_win_pct': 40.0,
@@ -363,3 +364,15 @@ def test_market_lines_blank_without_distribution():
     import src.app as app
     L = app._market_lines({'home_win_pct': 55.0, 'away_win_pct': 45.0})
     assert L['ml_home'] == '-122' and L['spread_home'] == '—' and L['total_line'] == '—'
+
+
+def test_market_compare_flags_edges():
+    import src.app as app
+    game = {'home_win_pct': 55.0, 'away_win_pct': 45.0, 'home_abbr': 'BOS', 'away_abbr': 'NYY',
+            'lines': {'total_line': '9.5'}}
+    mk = {'total': 8.0, 'over_odds': -110, 'under_odds': -110,
+          'ml_home': 130, 'ml_away': -150, 'n_books': 2}
+    c = app._market_compare(game, mk)
+    assert c['total'] == '8.0' and c['ml_home'] == '+130' and c['ml_away'] == '-150'
+    assert 'OVER 1.5' in c['total_edge']          # model 9.5 vs market 8.0
+    assert c['ml_edge'] == 'model likes BOS'      # market favors NYY, model favors BOS
