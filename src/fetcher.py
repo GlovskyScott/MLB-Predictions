@@ -955,6 +955,23 @@ def market_key(away_name: str, home_name: str) -> tuple:
     return (norm(away_name), norm(home_name))
 
 
+def _implied(odds) -> "float | None":
+    if odds is None:
+        return None
+    o = float(odds)
+    return (-o) / ((-o) + 100.0) if o < 0 else 100.0 / (o + 100.0)
+
+
+def devig_home_prob(ml_home, ml_away) -> "float | None":
+    """De-vigged home win probability from two American prices, or None if either
+    price is missing. Removes the bookmaker hold by normalizing the two raw
+    implied probabilities to sum to 1."""
+    ih, ia = _implied(ml_home), _implied(ml_away)
+    if ih is None or ia is None or (ih + ia) == 0:
+        return None
+    return ih / (ih + ia)
+
+
 def _avg(values) -> float | None:
     vals = [float(v) for v in values if v is not None]
     return sum(vals) / len(vals) if vals else None

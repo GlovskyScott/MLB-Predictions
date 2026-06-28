@@ -269,3 +269,22 @@ def test_get_pitching_stats_computes_real_fip(mocker, tmp_path):
     assert out.loc['Ace', 'ERA'] == out.loc['Wild', 'ERA']
     assert out.loc['Ace', 'FIP'] < out.loc['Wild', 'FIP'] - 1.0
     assert out.loc['Ace', 'FIP'] != out.loc['Ace', 'ERA']   # not just a copy
+
+
+# ---- de-vig helper (market-blended moneyline) ------------------------------
+import pytest as _pytest
+from src.fetcher import devig_home_prob
+
+
+def test_devig_home_prob_pick_em():
+    assert devig_home_prob(-110, -110) == _pytest.approx(0.5, abs=1e-6)
+
+
+def test_devig_home_prob_favorite():
+    p = devig_home_prob(-200, 170)
+    assert 0.60 < p < 0.68
+
+
+def test_devig_home_prob_none_when_missing():
+    assert devig_home_prob(None, 150) is None
+    assert devig_home_prob(-150, None) is None
