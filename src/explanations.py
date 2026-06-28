@@ -1,10 +1,11 @@
-"""AI game explanations via a local Ollama model (llama3.1:8b).
+"""AI game explanations via a local Ollama model (default qwen2.5:14b).
 
 Explanations are streamed to the browser over SSE and cached to memory + disk
 (data/explanations/<date>/<game_id>.txt) so repeat loads are instant and a
 background pre-generator can fill them in after each simulation run.
 """
 import json
+import os
 from datetime import date
 from pathlib import Path
 
@@ -14,7 +15,8 @@ _DATA_DIR = Path(__file__).parent.parent / "data"
 _EXPLANATIONS_DIR = _DATA_DIR / "explanations"
 
 _OLLAMA_URL = "http://localhost:11434/api/generate"
-_OLLAMA_MODEL = "llama3.1:8b"
+# Shared with src.chat — override with OLLAMA_MODEL (e.g. qwen2.5:7b / llama3.1:8b).
+_OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:14b")
 _explanation_cache: dict = {}  # game_id → full explanation text
 
 

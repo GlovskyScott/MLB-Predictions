@@ -5,11 +5,15 @@
 reply back as plain-text deltas. The dashboard renders these in a chat widget.
 """
 import json
+import os
 
 import requests as _requests
 
 _OLLAMA_CHAT_URL = "http://localhost:11434/api/chat"
-_OLLAMA_MODEL = "llama3.1:8b"
+# qwen2.5:14b reasons noticeably better than llama3.1:8b on these structured
+# betting questions and fits 16GB. Override with OLLAMA_MODEL to fall back
+# (e.g. qwen2.5:7b for less memory pressure, or llama3.1:8b for speed).
+_OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:14b")
 
 _SYSTEM_PREAMBLE = (
     "You are the assistant built into an MLB prediction dashboard. The data block "
