@@ -838,12 +838,17 @@ def _track_ui(last_7: dict, last_30: dict, last_90: dict,
 
     yrows = []
     for r in (yesterday.get('games') or []):
+        aw = r.get('away_abbr') or get_team_meta(r['away_id'])['abbr']
+        hw = r.get('home_abbr') or get_team_meta(r['home_id'])['abbr']
+        # HIT/MISS grades the Consensus moneyline pick (the pick of record),
+        # which can differ from the model's projected score — so show the graded
+        # pick, not the predicted score, or the row looks contradictory.
+        pick = hw if r.get('predicted_home_won') else aw
         yrows.append({
-            'away': r.get('away_abbr') or get_team_meta(r['away_id'])['abbr'],
-            'home': r.get('home_abbr') or get_team_meta(r['home_id'])['abbr'],
+            'away': aw, 'home': hw,
             'awayLogo': r.get('away_logo'), 'homeLogo': r.get('home_logo'),
             'actual': f"{r.get('actual_away_score')}–{r.get('actual_home_score')}",
-            'pred': f"{r.get('modal_away_score')}–{r.get('modal_home_score')}",
+            'pick': pick,
             'win': bool(r.get('winner_correct')),
         })
 
