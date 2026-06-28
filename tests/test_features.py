@@ -2,7 +2,10 @@ import pytest
 import pandas as pd
 import numpy as np
 from unittest.mock import patch
-from src.features import build_game_features, FEATURE_COLUMNS
+from src.features import (
+    build_game_features, FEATURE_COLUMNS,
+    _shrink_pitcher_stats, _PITCHER_DEFAULTS, _PITCHER_SHRINK_IP,
+)
 
 _NEW_FETCHER_MOCKS = {
     'src.features.get_pitcher_splits': lambda name, year: {},
@@ -63,3 +66,38 @@ def test_build_game_features_no_nans(sample_game, sample_pitching_stats,
     result = _run(sample_game, sample_pitching_stats, sample_batting_stats, sample_team_batting, sample_weather)
     for col in FEATURE_COLUMNS:
         assert not np.isnan(result[col]), f"Feature {col} is NaN"
+
+
+# ---- pitcher-stat shrinkage (regress rate stats to league avg by IP) --------
+
+def test_shrink_zero_ip_collapses_to_league_average():
+    # A TBD / no-data starter (ip=0) must read as exactly the league-average prior,
+    # not whatever placeholder rate stats came along.
+    sp = {'era': 9.82, 'fip': 12.0, 'xfip': 8.0, 'whip': 2.46,
+          'k9': 4.9, 'bb9': 6.0, 'hr9': 8.4, 'ip': 0.0}
+    out = _shrink_pitcher_stats(dict(sp))
+    for key in ('era', 'fip', 'xfip', 'whip', 'k9', 'bb9', 'hr9'):
+        assert out[key] == pytest.approx(_PITCHER_DEFAULTS[key])
+    assert out['ip'] == 0.0  # IP itself is not a rate; left untouched
+
+
+def test_shrink_small_sample_pulled_toward_prior():
+    # 3.2-IP spot starter with a 12.00 FIP must not be taken at face value.
+    sp = {'era': 9.82, 'fip': 12.0, 'xfip': 8.0, 'whip': 2.46,
+          'k9': 4.9, 'bb9': 6.0, 'hr9': 8.4, 'ip': 3.2}
+    out = _shrink_pitcher_stats(dict(sp))
+    # exact empirical-Bayes formula: (ip*raw + K*prior) / (ip + K)
+    K = _PITCHER_SHRINK_IP
+    expected_fip = (3.2 * 12.0 + K * _PITCHER_DEFAULTS['fip']) / (3.2 + K)
+    assert out['fip'] == pytest.approx(expected_fip)
+    assert out['fip'] < 6.0                      # strongly regressed
+    assert out['fip'] > _PITCHER_DEFAULTS['fip']  # but still above average
+
+
+def test_shrink_large_sample_stays_near_raw():
+    # A full-season workload (190 IP) keeps most of its own signal.
+    sp = {'era': 2.50, 'fip': 2.60, 'xfip': 3.0, 'whip': 0.95,
+          'k9': 11.0, 'bb9': 1.5, 'hr9': 0.6, 'ip': 190.0}
+    out = _shrink_pitcher_stats(dict(sp))
+    assert out['fip'] == pytest.approx(2.6, abs=0.4)   # close to raw 2.60
+    assert out['fip'] < _PITCHER_DEFAULTS['fip']       # ace stays below average

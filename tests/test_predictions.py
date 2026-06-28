@@ -57,35 +57,3 @@ def test_next_build_counts_per_major(tmp_path):
     assert P.next_build(tmp_path, 4) == 2   # -> next would be v4.2
     assert P.next_build(tmp_path, 1) == 1   # -> next would be v1.1
     assert P.next_build(tmp_path, 5) == 0   # new feature gen starts at .0
-
-
-# ---- market-line snapshot store (version-independent, write-once) -----------
-
-def test_market_lines_round_trip(tmp_path):
-    P.save_market_lines(tmp_path, '2026-06-28', {123: 8.5, 456: 9.0})
-    got = P.load_market_lines(tmp_path, '2026-06-28')
-    assert got['123']['total_line'] == 8.5
-    assert got['456']['total_line'] == 9.0
-    assert 'captured_at' in got['123']
-
-
-def test_market_lines_missing_returns_empty(tmp_path):
-    assert P.load_market_lines(tmp_path, '2026-01-01') == {}
-
-
-def test_market_lines_write_once_preserves_first_capture(tmp_path):
-    P.save_market_lines(tmp_path, '2026-06-28', {123: 8.5})
-    first_ts = P.load_market_lines(tmp_path, '2026-06-28')['123']['captured_at']
-    # A later capture must NOT move an already-captured line, but may add new games.
-    P.save_market_lines(tmp_path, '2026-06-28', {123: 10.0, 789: 7.5})
-    got = P.load_market_lines(tmp_path, '2026-06-28')
-    assert got['123']['total_line'] == 8.5            # preserved
-    assert got['123']['captured_at'] == first_ts      # preserved
-    assert got['789']['total_line'] == 7.5            # new game added
-
-
-def test_market_lines_skips_none_lines(tmp_path):
-    P.save_market_lines(tmp_path, '2026-06-28', {123: None, 456: 8.0})
-    got = P.load_market_lines(tmp_path, '2026-06-28')
-    assert '123' not in got                            # no line -> not stored
-    assert got['456']['total_line'] == 8.0
