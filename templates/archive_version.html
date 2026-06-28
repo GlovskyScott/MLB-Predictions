@@ -29,7 +29,7 @@
 <header>
     <div style="font-size:17px;font-weight:700;">
         Model <span class="mono">{{ version }}</span>
-        {% if meta.release %}<span class="tag" style="background:#444">{{ meta.release }}</span>{% endif %}
+        <span class="tag" style="background:#444">{{ meta.release if meta.release else ('v' ~ meta.feature_version if meta.feature_version is not none else 'legacy') }}</span>
         {% if is_current %}<span class="tag">current</span>{% endif %}
     </div>
     <a href="/archive">← All versions</a>
@@ -40,7 +40,7 @@
         <div class="stat"><div class="v">{{ summary.total_games }}</div><div class="l">Graded games</div></div>
         <div class="stat"><div class="v">{% if summary.avg_score_err is not none %}±{{ summary.avg_score_err }}{% else %}—{% endif %}</div><div class="l">Avg err</div></div>
         <div class="stat"><div class="v">{{ summary.days_with_games }}</div><div class="l">Days</div></div>
-        <div class="stat"><div class="v muted">{% if meta.feature_version is not none %}v{{ meta.feature_version }}{% elif meta.features %}{{ meta.features }}-feat{% else %}?{% endif %}</div><div class="l">Features</div></div>
+        <div class="stat"><div class="v muted">{% if meta.features %}{{ meta.features }}-feat{% elif meta.feature_version == 4 %}44-feat{% else %}?{% endif %}</div><div class="l">Features</div></div>
     </div>
 
     {% if not summary.daily %}

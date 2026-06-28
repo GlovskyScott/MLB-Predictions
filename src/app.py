@@ -12,7 +12,7 @@ from src.fetcher import (
     get_game_lineup, bootstrap_data_cache, bootstrap_model_cache,
     bootstrap_predictions_cache, refresh_schedule_date,
 )
-from src.features import build_game_features, build_inning_feature_row, _NEUTRAL_WEATHER, FEATURE_VERSION
+from src.features import build_game_features, build_inning_feature_row, _NEUTRAL_WEATHER, FEATURE_VERSION, FEATURE_COLUMNS
 from src.model import (
     train_models, load_models, models_exist, predict_game, build_training_data,
     train_inning_model, load_inning_model, inning_model_exists, predict_inning_probs,
@@ -201,6 +201,7 @@ def _current_version() -> str | None:
         _pred.append_version(_DATA_DIR, {
             'version': v,
             'created_at': datetime.now(timezone.utc).isoformat(),
+            'features': len(FEATURE_COLUMNS),
             **_read_model_meta(),
         })
     return v
