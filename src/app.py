@@ -445,10 +445,18 @@ def _game_chat_line(g: dict) -> str:
     if m:
         parts.append(f"model fair moneyline: {aw} {m.get('ml_away')}/{hw} {m.get('ml_home')};")
     if mk:
+        side, pct = mk.get('edge_ml_side'), mk.get('edge_ml_pct') or 0
+        side_price = mk.get('ml_home') if side == hw else mk.get('ml_away')
+        if pct >= _EDGE_MIN_PCT:
+            verdict = (f"COMPUTED VERDICT: value side is {side} at {side_price} "
+                       f"(model edge +{pct}%). The bet, if any, is {side} at {side_price} — "
+                       f"never the other side, never a different price.")
+        else:
+            verdict = ("COMPUTED VERDICT: NO BET — no side clears the "
+                       f"{_EDGE_MIN_PCT}% edge threshold; model and market roughly agree.")
         parts.append(
             f"ESPN avg moneyline ({mk.get('n_books', 0)} books): "
-            f"{aw} {mk.get('ml_away')}/{hw} {mk.get('ml_home')}; "
-            f"model moneyline edge vs market: {mk.get('edge_ml_side')} +{mk.get('edge_ml_pct')}%."
+            f"{aw} {mk.get('ml_away')}/{hw} {mk.get('ml_home')}. {verdict}"
         )
     return " ".join(p for p in parts if p)
 
