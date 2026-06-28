@@ -1048,3 +1048,118 @@ def get_market_odds(game_date: str) -> dict:
         pass
     _market_odds_cache[game_date] = (now, out)
     return out
+
+
+# Sharp-book preference order for a closing line (lowest hold / sharpest first).
+_CLOSING_BOOK_PREF = ('pinnacle', 'lowvig', 'betonlineag', 'circasports',
+                      'draftkings', 'fanduel')
+
+
+def _pick_h2h(bookmakers: list, home_name: str, away_name: str):
+    """From The Odds API bookmakers[], return (ml_home, ml_away, book_key).
+
+    Prefer the sharpest available book (_CLOSING_BOOK_PREF); fall back to the
+    first book that quotes both sides. American odds.
+    """
+    def h2h(bm):
+        for mk in bm.get('markets', []):
+            if mk.get('key') != 'h2h':
+                continue
+            prices = {o.get('name'): o.get('price') for o in mk.get('outcomes', [])}
+            h, a = prices.get(home_name), prices.get(away_name)
+            if h is not None and a is not None:
+                return float(h), float(a)
+        return None
+    by_key = {bm.get('key'): bm for bm in bookmakers}
+    for pref in _CLOSING_BOOK_PREF:
+        if pref in by_key and (r := h2h(by_key[pref])):
+            return r[0], r[1], pref
+    for bm in bookmakers:
+        if r := h2h(bm):
+            return r[0], r[1], bm.get('key')
+    return None
+
+
+def get_closing_moneylines(api_key: str = None) -> dict:
+    """Current MLB moneylines from The Odds API, keyed for the closing-line store.
+
+    Captures the *live* line for upcoming games — run near first pitch to record a
+    closing-ish line. Free tier (no card, ~500 req/month); 1 request returns the
+    whole slate. Reads the key from ``api_key`` or the ODDS_API_KEY env var.
+    Returns {market_key(away, home): {ml_home, ml_away, book, commence_time}}, or
+    {} if no key / on any failure (graceful, like get_market_odds).
+    """
+    import os
+    key = api_key or os.environ.get('ODDS_API_KEY')
+    if not key:
+        return {}
+    url = 'https://api.the-odds-api.com/v4/sports/baseball_mlb/odds'
+    params = {'apiKey': key, 'regions': 'us,us2,eu', 'markets': 'h2h',
+              'oddsFormat': 'american'}
+    out = {}
+    try:
+        games = requests.get(url, params=params, timeout=12).json()
+        if not isinstance(games, list):
+            return {}
+        for g in games:
+            home, away = g.get('home_team'), g.get('away_team')
+            picked = _pick_h2h(g.get('bookmakers', []), home, away)
+            if not (home and away and picked):
+                continue
+            mlh, mla, book = picked
+            out[market_key(away, home)] = {'ml_home': mlh, 'ml_away': mla,
+                                           'book': book,
+                                           'commence_time': g.get('commence_time')}
+    except Exception:
+        return {}
+    return out
+
+
+def get_historical_moneylines(timestamp: str, regions: str = 'us',
+                              api_key: str = None, retries: int = 3) -> tuple:
+    """One historical snapshot of MLB moneylines at `timestamp` (ISO8601).
+
+    Costs 10 credits per region per market — call with the minimal `h2h`/`us`
+    config and reuse each snapshot across a whole start-time cluster. Retries
+    transient failures (429/5xx/timeout) with backoff. Returns
+    ``(lines, requests_remaining, ok)``: lines maps market_key(away, home) ->
+    {ml_home, ml_away, book, commence_time}; requests_remaining is the quota
+    header (int) or None; ok is False if the request hard-failed after retries
+    (so a credit-spending backfill won't mark the date done and lose games).
+    """
+    import os
+    key = api_key or os.environ.get('ODDS_API_KEY')
+    if not key:
+        return {}, None, False
+    url = 'https://api.the-odds-api.com/v4/historical/sports/baseball_mlb/odds'
+    params = {'apiKey': key, 'date': timestamp, 'regions': regions,
+              'markets': 'h2h', 'oddsFormat': 'american'}
+    for attempt in range(retries):
+        try:
+            resp = requests.get(url, params=params, timeout=15)
+            if resp.status_code != 200:            # 401/422 are fatal; 429/5xx retryable
+                if resp.status_code in (429, 500, 502, 503, 504) and attempt < retries - 1:
+                    time.sleep(1.5 * (attempt + 1))
+                    continue
+                return {}, None, False
+            remaining = resp.headers.get('x-requests-remaining')
+            remaining = int(remaining) if remaining is not None else None
+            body = resp.json()
+            games = body.get('data', []) if isinstance(body, dict) else []
+            out = {}
+            for g in games:
+                home, away = g.get('home_team'), g.get('away_team')
+                picked = _pick_h2h(g.get('bookmakers', []), home, away)
+                if not (home and away and picked):
+                    continue
+                mlh, mla, book = picked
+                out[market_key(away, home)] = {'ml_home': mlh, 'ml_away': mla,
+                                               'book': book,
+                                               'commence_time': g.get('commence_time')}
+            return out, remaining, True
+        except Exception:
+            if attempt < retries - 1:
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            return {}, None, False
+    return {}, None, False
