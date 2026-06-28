@@ -65,11 +65,18 @@ def _build_explain_prompt(game: dict) -> str:
         elif f.get('wind_in', 0) > 0.5:
             wx += ' blowing in (pitcher-friendly)'
 
-    return f"""You are a sharp baseball analyst. Write 2-3 tight paragraphs explaining why the model predicts this outcome. Be specific, cite the numbers, and lead with the most decisive factors. No bullet points. Confident, present-tense analyst voice. Keep it under 200 words.
+    return f"""You are a sharp baseball analyst. In 2-3 tight paragraphs, explain why the model predicts this outcome. Lead with the most decisive factors and cite the specific numbers below.
+
+RULES — follow exactly:
+- Use ONLY the numbers given below. Never invent statistics, records, player history, or ballpark dimensions, and never cite a number that is not listed.
+- Describe the park ONLY via its runs factor (1.00 = neutral, above = favors hitters, below = favors pitchers). Do not mention field dimensions or the Green Monster.
+- The score below is the model's single most-likely FULL-GAME final. Do not invent any other score, "median", or "average", and report it for the correct team.
+- Stay internally consistent: if the projected runs are low, call it low-scoring — never also call it high-scoring.
+- No bullet points. Confident present-tense analyst voice. Under 180 words.
 
 {away} @ {home} — {venue}
 Win probability: {away} {away_win}% | {home} {home_win}%
-Most likely score: {away} {modal_away} – {home} {modal_home}
+Model's projected final score: {away} {modal_away}, {home} {modal_home}
 
 Starters:
   {away}: {away_p} ({away_hand}) ERA {f.get('away_sp_era',0):.2f} FIP {f.get('away_sp_fip',0):.2f} WHIP {f.get('away_sp_whip',0):.2f} — {f.get('away_sp_days_rest',5):.0f}d rest
@@ -99,7 +106,7 @@ def _stream_ollama(prompt: str, game_id: int = None, game_date: str = None):
         resp = _requests.post(
             _OLLAMA_URL,
             json={'model': _OLLAMA_MODEL, 'prompt': prompt, 'stream': True,
-                  'options': {'num_predict': 350, 'temperature': 0.7}},
+                  'options': {'num_predict': 350, 'temperature': 0.2}},
             stream=True,
             timeout=90,
         )
@@ -130,7 +137,7 @@ def _generate_explanation_sync(game: dict) -> str:
         resp = _requests.post(
             _OLLAMA_URL,
             json={'model': _OLLAMA_MODEL, 'prompt': prompt, 'stream': False,
-                  'options': {'num_predict': 350, 'temperature': 0.7}},
+                  'options': {'num_predict': 350, 'temperature': 0.2}},
             timeout=120,
         )
         return resp.json().get('response', '').strip()
@@ -182,7 +189,7 @@ def _stream_edge_summary(game: dict, game_id: int = None):
         resp = _requests.post(
             _OLLAMA_URL,
             json={'model': _OLLAMA_MODEL, 'prompt': _build_edge_prompt(game),
-                  'stream': True, 'options': {'num_predict': 48, 'temperature': 0.6}},
+                  'stream': True, 'options': {'num_predict': 48, 'temperature': 0.3}},
             stream=True, timeout=60,
         )
         acc = ''
