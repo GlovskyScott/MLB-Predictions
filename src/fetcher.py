@@ -22,6 +22,10 @@ def bootstrap_model_cache(repo: str = "jackleh/MLB-Predictions") -> None:
     """Download model pkl files from the latest release into data/ if missing.
 
     Safe to call repeatedly — no-op if all pkls already exist.
+
+    Security note: the pkls are unpickled (model.load_models -> joblib.load),
+    which executes code on load. Only ever point this at the project's own
+    trusted releases — never a third-party `repo`.
     """
     if all((_DATA_DIR / p).exists() for p in _MODEL_PKLS):
         return
@@ -60,7 +64,7 @@ def bootstrap_data_cache(repo: str = "jackleh/MLB-Predictions") -> None:
             )
             asset_path = Path(tmp) / _DATA_RELEASE_ASSET
             with tarfile.open(asset_path, "r:gz") as tf:
-                tf.extractall(_DATA_DIR)
+                tf.extractall(_DATA_DIR, filter="data")  # block path traversal
         print("Data cache restored.")
     except Exception as e:
         print(f"Could not download data cache ({e}). Will fetch fresh data instead.")
@@ -87,7 +91,7 @@ def bootstrap_predictions_cache(repo: str = "jackleh/MLB-Predictions") -> None:
             )
             asset_path = Path(tmp) / _PREDICTIONS_RELEASE_ASSET
             with tarfile.open(asset_path, "r:gz") as tf:
-                tf.extractall(_DATA_DIR / "predictions")
+                tf.extractall(_DATA_DIR / "predictions", filter="data")  # block path traversal
         print("Prediction archive restored.")
     except Exception as e:
         print(f"Could not download prediction archive ({e}). Predictions will be generated fresh.")

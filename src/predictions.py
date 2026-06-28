@@ -11,10 +11,14 @@ Layout under data/:
 """
 import hashlib
 import json
+import threading
 from pathlib import Path
 
 _PKL_NAMES = ('model_win.pkl', 'model_runs_home.pkl',
               'model_runs_away.pkl', 'model_inning.pkl')
+
+_registry_lock = threading.Lock()
+_version_memo: dict = {}  # pkl signature -> 12-hex hash (avoids re-hashing 1.5 MB per call)
 
 # The simulation core persisted per game. No actual scores (joined on read) and
 # no presentation fields (logos/colors/weather/features, re-derived at render).
@@ -34,14 +38,25 @@ def _pred_dir(data_dir) -> Path:
 
 def model_version(data_dir):
     """Return the 12-hex version id for the current model pkls, or None if any
-    pkl is missing. Deterministic: same bytes -> same id; any change -> new id."""
+    pkl is missing. Deterministic: same bytes -> same id; any change -> new id.
+
+    Memoized on the pkls' (path, mtime, size) signature so callers (every
+    prediction/grade path hits this) don't re-read and SHA-256 ~1.5 MB each
+    call. A retrain rewrites the pkls -> new mtime -> the hash recomputes.
+    """
+    paths = [Path(data_dir) / name for name in _PKL_NAMES]
+    if not all(p.exists() for p in paths):
+        return None
+    sig = tuple((str(p), p.stat().st_mtime_ns, p.stat().st_size) for p in paths)
+    cached = _version_memo.get(sig)
+    if cached is not None:
+        return cached
     h = hashlib.sha256()
-    for name in _PKL_NAMES:
-        p = Path(data_dir) / name
-        if not p.exists():
-            return None
+    for p in paths:
         h.update(p.read_bytes())
-    return h.hexdigest()[:12]
+    v = h.hexdigest()[:12]
+    _version_memo[sig] = v
+    return v
 
 
 def _versions_file(data_dir) -> Path:
@@ -59,14 +74,21 @@ def read_versions(data_dir) -> list:
 
 
 def append_version(data_dir, entry: dict) -> None:
-    """Append a version entry to the registry, idempotent on entry['version']."""
-    versions = read_versions(data_dir)
-    if any(v.get('version') == entry.get('version') for v in versions):
-        return
-    versions.append(entry)
-    f = _versions_file(data_dir)
-    f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(json.dumps(versions, indent=2))
+    """Append a version entry to the registry, idempotent on entry['version'].
+
+    Locked: the backfill runs parallel workers that all call _current_version on
+    a new version's first sight, which would otherwise race read-modify-write.
+    """
+    with _registry_lock:
+        versions = read_versions(data_dir)
+        if any(v.get('version') == entry.get('version') for v in versions):
+            return
+        versions.append(entry)
+        f = _versions_file(data_dir)
+        f.parent.mkdir(parents=True, exist_ok=True)
+        tmp = f.with_suffix('.json.tmp')
+        tmp.write_text(json.dumps(versions, indent=2))
+        tmp.replace(f)
 
 
 def next_build(data_dir, major) -> int:

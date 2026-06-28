@@ -291,3 +291,12 @@ def test_archive_pages_render(client, tmp_path, mocker):
     r2 = client.get('/archive/vCUR')
     assert r2.status_code == 200
     assert b'2026-06-26' in r2.data
+
+
+def test_archive_unknown_version_404(client, tmp_path, mocker):
+    import src.app as app
+    mocker.patch.object(app, '_DATA_DIR', tmp_path)
+    mocker.patch.object(app, '_current_version', return_value='vCUR')
+    # no versions.json -> unknown version must not touch the filesystem path
+    assert client.get('/archive/..%2f..').status_code in (404, 308, 400)
+    assert client.get('/archive/bogus').status_code == 404

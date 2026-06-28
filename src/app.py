@@ -2,7 +2,7 @@ import json
 import threading
 import requests as _requests
 import pandas as pd
-from flask import Flask, render_template, redirect, url_for, request, Response, stream_with_context
+from flask import Flask, render_template, redirect, url_for, request, Response, stream_with_context, abort
 from datetime import date, timedelta
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -754,8 +754,12 @@ def create_app(testing: bool = False) -> Flask:
 
     @app.route('/archive/<version>')
     def archive_version(version: str):
+        # Only serve known versions — `version` is used to build a filesystem
+        # path (predictions/<version>/...), so never trust it from the URL.
         meta = next((v for v in _pred.read_versions(_DATA_DIR)
-                     if v['version'] == version), {'version': version})
+                     if v['version'] == version), None)
+        if meta is None:
+            abort(404)
         summary = _version_summary(version)
         return render_template('archive_version.html', version=version, meta=meta,
                                summary=summary, is_current=(version == _current_version()))
