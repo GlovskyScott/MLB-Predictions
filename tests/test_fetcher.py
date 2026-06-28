@@ -285,6 +285,16 @@ def test_devig_home_prob_favorite():
     assert 0.60 < p < 0.68
 
 
-def test_devig_home_prob_none_when_missing():
-    assert devig_home_prob(None, 150) is None
-    assert devig_home_prob(-150, None) is None
+def test_devig_home_prob_none_only_when_both_missing():
+    assert devig_home_prob(None, None) is None
+
+
+def test_devig_home_prob_one_sided_uses_20cent_line():
+    # Only the home favorite quoted (-150). Reconstruct away on a 20-cent line
+    # (+130) and de-vig: home should land ~58%, clearly below the raw -150 (60%).
+    p = devig_home_prob(-150, None)
+    assert 0.55 < p < 0.60
+    # Symmetric: only the away favorite quoted -> home is the dog, prob < 0.5.
+    p2 = devig_home_prob(None, -150)
+    assert 0.40 < p2 < 0.45
+    assert p + p2 == _pytest.approx(1.0, abs=1e-6)   # mirror of each other
