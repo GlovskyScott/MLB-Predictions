@@ -154,26 +154,35 @@ def _build_edge_prompt(game: dict) -> str:
     return (
         f"You are a sharp MLB betting analyst. The model likes {pick} over {opp} "
         f"(+{mk.get('edge_ml_pct', 0)}% edge vs the market), behind {pick_p}.\n"
-        f"In ONE sentence, 10 words MAX, give the bettor the KEY ANGLE for taking "
-        f"{pick}. Do NOT restate the win %, the odds, or the projected score — only "
-        f"the reasoning. Plain text, no quotes, no period needed.\nAngle:"
+        f"Give the bettor the KEY ANGLE for taking {pick} in ONE punchy, complete "
+        f"sentence — aim for about 8 words, no more than 14. Do NOT restate the "
+        f"win %, the odds, or the projected score — only the reasoning. Plain text, "
+        f"no quotes.\nAngle:"
     )
 
 
-_EDGE_WORD_CAP = 10
+def _first_sentence_break(s: str) -> int:
+    """Index of the first sentence-ending terminator followed by a space (so a
+    decimal like 3.82 doesn't count), or -1. Used to stop after one sentence."""
+    best = -1
+    for sep in ('. ', '! ', '? '):
+        i = s.find(sep)
+        if i != -1 and (best == -1 or i < best):
+            best = i
+    return best
 
 
 def _stream_edge_summary(game: dict, game_id: int = None):
     """Stream the edge angle from Ollama as SSE deltas so it types in as it
-    generates. Cleans punctuation on the fly and hard-caps at 10 words; caches
-    the final text. Yields {'error': ...} on failure so the client keeps its
-    deterministic fallback line."""
+    generates. Emits the first complete sentence only (no mid-thought chopping);
+    brevity is encouraged by the prompt. Caches the final text. Yields
+    {'error': ...} on failure so the client keeps its deterministic fallback."""
     sent = ''  # cleaned text already emitted to the client
     try:
         resp = _requests.post(
             _OLLAMA_URL,
             json={'model': _OLLAMA_MODEL, 'prompt': _build_edge_prompt(game),
-                  'stream': True, 'options': {'num_predict': 40, 'temperature': 0.6}},
+                  'stream': True, 'options': {'num_predict': 48, 'temperature': 0.6}},
             stream=True, timeout=60,
         )
         acc = ''
@@ -184,9 +193,9 @@ def _stream_edge_summary(game: dict, game_id: int = None):
             acc += chunk.get('response', '')
             done = bool(chunk.get('done'))
             cleaned = acc.replace('\n', ' ').strip().lstrip('"')
-            words = cleaned.split()
-            if len(words) > _EDGE_WORD_CAP:
-                cleaned = ' '.join(words[:_EDGE_WORD_CAP])
+            brk = _first_sentence_break(cleaned)
+            if brk != -1:           # stop at the end of the first sentence
+                cleaned = cleaned[:brk]
                 done = True
             delta = cleaned[len(sent):]
             if delta:
