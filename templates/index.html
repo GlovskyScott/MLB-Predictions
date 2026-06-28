@@ -128,7 +128,51 @@
         .chat-input button { background: #1a6fd4; color: #fff; border: none; border-radius: 8px; padding: 0 14px; font-weight: 700; cursor: pointer; }
         .explain-queued { color: #444; font-style: italic; }
 
+        /* ── Games toolbar ── */
+        .games-toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+        .games-toolbar input, .games-toolbar select { background: #161616; border: 1px solid #2a2a2a; color: #ddd; border-radius: 6px; padding: 6px 9px; font-size: 12px; }
+        .games-toolbar input[type=search] { flex: 1; min-width: 130px; }
+        .tb-btn { background: #2a2a2a; color: #ccc; border: 1px solid #333; border-radius: 6px; padding: 6px 11px; font-size: 12px; font-weight: 600; cursor: pointer; }
+        .tb-btn:hover { background: #333; }
+
+        /* ── Today's Best Edges board ── */
+        .edges-board { background: #101a12; border: 1px solid #1d3322; border-radius: 10px; padding: 8px 10px; margin-bottom: 14px; }
+        .edges-title { font-size: 11px; font-weight: 700; color: #5dd47e; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px; }
+        .edge-row { display: flex; align-items: center; gap: 10px; padding: 5px 4px; border-top: 1px solid #16241a; cursor: pointer; font-size: 12px; }
+        .edge-row:first-of-type { border-top: none; }
+        .edge-row:hover { background: #13241a; }
+        .edge-row .edge-pct { color: #5dd47e; font-weight: 800; min-width: 42px; }
+        .edge-row .edge-desc { color: #cfe9d6; font-weight: 600; flex: 1; }
+        .edge-row .edge-game { color: #6f8f79; font-size: 11px; white-space: nowrap; }
+
+        /* ── Collapsible game cards ── */
+        .card-summary { display: flex; align-items: center; gap: 10px; padding: 10px 12px; cursor: pointer; user-select: none; }
+        .card-summary:hover { background: #181818; }
+        .card-summary .chev { color: #6ea3d6; font-size: 17px; line-height: 1; transition: transform .15s; width: 16px; text-align: center; flex-shrink: 0; }
+        .card-summary:hover .chev { color: #9ec5ff; }
+        .game-card.expanded .card-summary .chev { transform: rotate(90deg); }
+        .sum-match { display: flex; align-items: center; gap: 5px; font-weight: 800; font-size: 13px; color: #fff; flex: 1; min-width: 0; }
+        .sum-logo { width: 20px; height: 20px; object-fit: contain; }
+        .sum-at { color: #555; font-weight: 400; margin: 0 1px; }
+        .sum-win { font-size: 12px; font-weight: 700; color: #aacdff; white-space: nowrap; }
+        .sum-edge { white-space: nowrap; }
+        .sum-edge .edge-badge { background: #14301d; color: #5dd47e; font-size: 10px; font-weight: 800; padding: 2px 7px; border-radius: 4px; }
+        .sum-edge .edge-none { color: #444; font-size: 12px; }
+        .sum-time { font-size: 10px; color: #666; white-space: nowrap; min-width: 58px; text-align: right; }
+        .card-body { display: none; }
+        .game-card.expanded .card-body { display: block; }
+
         @media (max-width: 900px) { .dashboard { grid-template-columns: 1fr; } }
+        @media (max-width: 600px) {
+            .dashboard { padding: 10px; gap: 12px; }
+            header { flex-wrap: wrap; gap: 8px; }
+            .games-toolbar input[type=search] { flex-basis: 100%; }
+            .games-toolbar select, .tb-btn { flex: 1; }
+            .odds-block { overflow-x: auto; }
+            .inn-table { display: block; overflow-x: auto; white-space: nowrap; }
+            .results-table, .daily-table { display: block; overflow-x: auto; }
+            .sum-time { min-width: auto; }
+        }
         @media print {
             body { background: #fff !important; color: #111 !important; }
             header { background: #fff !important; border-bottom: 1px solid #ccc !important; }
@@ -148,6 +192,15 @@
             .sub-text { color: #777 !important; }
             /* Preserve color only on win probability bars */
             [id^="prob-"], [id^="prob-"] * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+            /* Print every game as if fully expanded; hide interactive chrome */
+            .card-body { display: block !important; }
+            .card-summary, .games-toolbar, .header-actions, .discuss-btn, #chat-fab, .chat-panel { display: none !important; }
+            .game-card { break-inside: avoid; }
+            .edges-board { background: #fff !important; border-color: #ccc !important; }
+            .edges-title { color: #2a7a45 !important; }
+            .edge-row { border-color: #eee !important; cursor: default; }
+            .edge-row .edge-desc { color: #222 !important; }
+            .edge-row .edge-game, .edge-row .edge-pct { color: #2a7a45 !important; }
         }
     </style>
 </head>
@@ -179,6 +232,35 @@
     <div class="no-games">No games scheduled for {{ sim_date }}.</div>
     {% else %}
 
+    {% if top_edges %}
+    <div class="edges-board">
+        <div class="edges-title">Today's Best Edges</div>
+        {% for e in top_edges %}
+        <div class="edge-row" onclick="jumpToGame({{ e.game_id }})" title="Jump to {{ e.matchup }}">
+            <span class="edge-pct">+{{ e.pct }}%</span>
+            <span class="edge-desc">{{ e.side }} {{ e.market }}</span>
+            <span class="edge-game">{{ e.matchup }}</span>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    <div class="games-toolbar">
+        <input type="search" id="team-search" placeholder="Search team…" aria-label="Search team">
+        <select id="sort-select" aria-label="Sort games">
+            <option value="time">Sort: First pitch</option>
+            <option value="edge">Sort: Best edge</option>
+            <option value="confidence">Sort: Win confidence</option>
+            <option value="matchup">Sort: Matchup A–Z</option>
+        </select>
+        <select id="filter-select" aria-label="Filter games">
+            <option value="all">All games</option>
+            <option value="edge">Has edge</option>
+        </select>
+        <button class="tb-btn" id="expand-toggle" type="button" onclick="toggleExpandAll()">Expand all</button>
+    </div>
+
+    <div id="games-list">
     {% for r in results %}
     {% if not r.get('error') %}
     <script>
@@ -192,10 +274,28 @@
     </script>
     {% endif %}
 
-    <div class="game-card">
+    <div class="game-card{% if r.get('error') %} is-error{% endif %}"
+         {% if not r.get('error') %}id="card-{{ r.game_id }}" data-gameid="{{ r.game_id }}"
+         data-edge="{{ r.best_edge.pct if r.best_edge else 0 }}"
+         data-firstpitch="{{ r.game_datetime or '' }}"
+         data-confidence="{{ r.home_win_pct if r.home_win_pct >= r.away_win_pct else r.away_win_pct }}"
+         data-teams="{{ (r.away_name ~ ' ' ~ r.away_abbr ~ ' ' ~ r.home_name ~ ' ' ~ r.home_abbr) | lower }}"{% endif %}>
     {% if r.get('error') %}
         <div style="padding:12px;color:#e46a6a;font-size:12px;">{{ r.away_name }} @ {{ r.home_name }}<br><small>{{ r.error }}</small></div>
     {% else %}
+        {% set fav_home = r.home_win_pct >= r.away_win_pct %}
+        <div class="card-summary" onclick="toggleCard({{ r.game_id }})">
+            <span class="chev">▸</span>
+            <span class="sum-match">
+                <img class="sum-logo" src="{{ r.away_logo }}" alt="" loading="lazy">{{ r.away_abbr }}
+                <span class="sum-at">@</span>
+                <img class="sum-logo" src="{{ r.home_logo }}" alt="" loading="lazy">{{ r.home_abbr }}
+            </span>
+            <span class="sum-win">{{ r.home_abbr if fav_home else r.away_abbr }} {{ (r.home_win_pct if fav_home else r.away_win_pct) | round | int }}%</span>
+            <span class="sum-edge">{% if r.best_edge %}<span class="edge-badge">{{ r.best_edge.side }} {{ r.best_edge.market }} +{{ r.best_edge.pct }}%</span>{% else %}<span class="edge-none">—</span>{% endif %}</span>
+            <span class="sum-time game-time" data-utc="{{ r.game_datetime }}"></span>
+        </div>
+        <div class="card-body">
         <div class="card-matchup"
              style="background:linear-gradient(135deg,{{ r.away_color }}20 0%,#141414 38%,#141414 62%,{{ r.home_color }}20 100%);">
             <div class="team-side away">
@@ -342,10 +442,12 @@
                 </div>
             </div>
             {% endif %}
-        </div>
+        </div><!-- /card-detail -->
+        </div><!-- /card-body -->
     {% endif %}
     </div>
     {% endfor %}
+    </div><!-- /games-list -->
     {% endif %}
 </div><!-- /left -->
 
@@ -475,18 +577,92 @@
 </footer>
 
 <script>
-document.addEventListener('DOMContentLoaded', function () {
-    document.querySelectorAll('[id^="chart-"]').forEach(function (canvas) {
-        const gameId = canvas.id.replace('chart-', '');
-        const d = window['cdata_' + gameId];
-        if (d) renderScoreDistribution(canvas.id,
+/* ── Collapsible cards: lazy chart + analysis on first expand ── */
+const _chartRendered = {}, _explainLoaded = {};
+
+function renderCardChart(gameId) {
+    if (_chartRendered[gameId]) return;
+    const d = window['cdata_' + gameId];
+    if (d && document.getElementById('chart-' + gameId)) {
+        renderScoreDistribution('chart-' + gameId,
             d.home, d.away, d.labels, d.homeName, d.awayName, d.homeColor, d.awayColor, d.nSims);
+        _chartRendered[gameId] = true;
+    }
+}
+function ensureExplain(gameId) {
+    if (_explainLoaded[gameId]) return;
+    _explainLoaded[gameId] = true;
+    streamExplanation(gameId);
+}
+function expandCard(gameId) {
+    const card = document.getElementById('card-' + gameId);
+    if (!card) return;
+    card.classList.add('expanded');
+    renderCardChart(gameId);
+    ensureExplain(gameId);
+}
+function collapseCard(gameId) {
+    const card = document.getElementById('card-' + gameId);
+    if (card) card.classList.remove('expanded');
+}
+function toggleCard(gameId) {
+    const card = document.getElementById('card-' + gameId);
+    if (!card) return;
+    card.classList.contains('expanded') ? collapseCard(gameId) : expandCard(gameId);
+    saveExpanded();
+}
+function allCards() { return [...document.querySelectorAll('.game-card[data-gameid]')]; }
+function expandAll() { allCards().forEach(c => expandCard(+c.dataset.gameid)); }
+function collapseAll() { allCards().forEach(c => collapseCard(+c.dataset.gameid)); }
+
+let _allExpanded = false;
+function toggleExpandAll() {
+    _allExpanded = !_allExpanded;
+    _allExpanded ? expandAll() : collapseAll();
+    document.getElementById('expand-toggle').textContent = _allExpanded ? 'Collapse all' : 'Expand all';
+    localStorage.setItem('ui.expandAll', _allExpanded ? '1' : '0');
+    saveExpanded();
+}
+function jumpToGame(gameId) {
+    expandCard(gameId);
+    saveExpanded();
+    const card = document.getElementById('card-' + gameId);
+    if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+function saveExpanded() {
+    const ids = [...document.querySelectorAll('.game-card.expanded[data-gameid]')].map(c => c.dataset.gameid);
+    localStorage.setItem('ui.expanded', JSON.stringify(ids));
+}
+
+/* ── Sort / filter / search ── */
+function applySortFilter() {
+    const list = document.getElementById('games-list');
+    if (!list) return;
+    const sort = document.getElementById('sort-select').value;
+    const filter = document.getElementById('filter-select').value;
+    const q = document.getElementById('team-search').value.trim().toLowerCase();
+    localStorage.setItem('ui.sort', sort);
+    localStorage.setItem('ui.filter', filter);
+    localStorage.setItem('ui.search', q);
+    const cards = allCards();
+    cards.forEach(c => {
+        let show = true;
+        if (filter === 'edge') show = parseFloat(c.dataset.edge || '0') > 0;
+        if (show && q) show = (c.dataset.teams || '').includes(q);
+        c.style.display = show ? '' : 'none';
     });
+    const num = (c, k) => parseFloat(c.dataset[k] || '0');
+    const str = (c, k) => (c.dataset[k] || '');
+    const cmp = {
+        edge: (a, b) => num(b, 'edge') - num(a, 'edge'),
+        time: (a, b) => str(a, 'firstpitch').localeCompare(str(b, 'firstpitch')),
+        confidence: (a, b) => num(b, 'confidence') - num(a, 'confidence'),
+        matchup: (a, b) => str(a, 'teams').localeCompare(str(b, 'teams')),
+    }[sort] || (() => 0);
+    cards.sort(cmp).forEach(c => list.appendChild(c));
+}
 
-
-    const _autoGameIds = [{% for r in results %}{% if not r.get('error') %}{{ r.game_id }},{% endif %}{% endfor %}];
-    autoExplainAll(_autoGameIds);
-
+document.addEventListener('DOMContentLoaded', function () {
     document.querySelectorAll('.game-time[data-utc]').forEach(function (el) {
         const utc = el.dataset.utc;
         if (!utc) return;
@@ -495,6 +671,49 @@ document.addEventListener('DOMContentLoaded', function () {
             if (isNaN(d.getTime())) return;
             el.textContent = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', timeZoneName: 'short' });
         } catch (e) {}
+    });
+
+    // One-time migration: the old default was 'edge'; drop a stale saved value
+    // so the new 'first pitch' default takes effect for everyone.
+    if (localStorage.getItem('ui.sortDefault') !== 'time') {
+        localStorage.removeItem('ui.sort');
+        localStorage.setItem('ui.sortDefault', 'time');
+    }
+
+    const sortSel = document.getElementById('sort-select');
+    if (sortSel) {
+        sortSel.value = localStorage.getItem('ui.sort') || 'time';
+        document.getElementById('filter-select').value = localStorage.getItem('ui.filter') || 'all';
+        document.getElementById('team-search').value = localStorage.getItem('ui.search') || '';
+        sortSel.addEventListener('change', applySortFilter);
+        document.getElementById('filter-select').addEventListener('change', applySortFilter);
+        document.getElementById('team-search').addEventListener('input', applySortFilter);
+        applySortFilter();
+    }
+
+    // Restore expand state
+    if (localStorage.getItem('ui.expandAll') === '1') {
+        _allExpanded = true;
+        expandAll();
+        const t = document.getElementById('expand-toggle');
+        if (t) t.textContent = 'Collapse all';
+    } else {
+        let saved = [];
+        try { saved = JSON.parse(localStorage.getItem('ui.expanded') || '[]'); } catch (e) {}
+        saved.forEach(id => expandCard(+id));
+    }
+});
+
+/* ── Print: render every card as if expanded (charts need a visible canvas) ── */
+window.addEventListener('beforeprint', function () {
+    allCards().forEach(function (c) { c.classList.add('expanded'); renderCardChart(+c.dataset.gameid); });
+});
+window.addEventListener('afterprint', function () {
+    const allExp = localStorage.getItem('ui.expandAll') === '1';
+    let saved = [];
+    try { saved = JSON.parse(localStorage.getItem('ui.expanded') || '[]').map(String); } catch (e) {}
+    allCards().forEach(function (c) {
+        c.classList.toggle('expanded', allExp || saved.includes(c.dataset.gameid));
     });
 });
 
@@ -529,14 +748,6 @@ function streamExplanation(gameId, onDone) {
         if (!hasText) box.textContent = 'Could not reach Ollama — make sure it is running.';
         if (onDone) onDone();
     };
-}
-
-async function autoExplainAll(gameIds) {
-    for (const gameId of gameIds) {
-        await new Promise(function (resolve) {
-            streamExplanation(gameId, resolve);
-        });
-    }
 }
 
 /* ── Chat assistant ── */
