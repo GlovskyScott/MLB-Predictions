@@ -7,6 +7,24 @@ from src.features import FEATURE_COLUMNS, INNING_FEATURE_COLUMNS, build_inning_f
 
 _DEFAULT_MODEL_DIR = Path(__file__).parent.parent / "data"
 
+# Hyperparameters for the two run regressors (home_runs / away_runs). These feed
+# the simulator, which produces every served number (win%, scores, run-line /
+# total edges), so they are the highest-impact knob in the system. Selected by
+# walk-forward (past-only) cross-validation in scripts/tune_regressors.py against
+# out-of-sample run-prediction error, with a locked final-season holdout to guard
+# against overfitting the backtest. Changing these changes the pkl bytes and so
+# forks a new model version (see CLAUDE.md "versioned prediction store").
+#
+# max_depth=3 (was 4): walk-forward over 2024-25 cut out-of-sample run MAE from
+# 2.488 -> 2.465 (-0.9%), and the same config independently beat depth-4 on the
+# untouched 2026 holdout (2.474 -> 2.448, -1.0%). The shallower tree is the more
+# regularized — and simpler — model, so it both improves accuracy and reduces
+# overfitting. Re-run scripts/tune_regressors.py after any feature change.
+RUN_REGRESSOR_PARAMS = {
+    'n_estimators': 200, 'max_depth': 3, 'learning_rate': 0.05,
+    'subsample': 0.8, 'colsample_bytree': 0.8,
+}
+
 
 def build_training_data(games_with_features: pd.DataFrame) -> pd.DataFrame:
     """Filter to completed games and ensure target columns exist."""
@@ -17,12 +35,20 @@ def build_training_data(games_with_features: pd.DataFrame) -> pd.DataFrame:
     return completed
 
 
-def train_models(training_df: pd.DataFrame, model_dir: Path = None) -> dict:
-    """Train XGBoost win probability + run total models. Returns dict of models."""
+def train_models(training_df: pd.DataFrame, model_dir: Path = None,
+                 params: dict = None) -> dict:
+    """Train XGBoost win probability + run total models. Returns dict of models.
+
+    ``params`` overrides the run-regressor hyperparameters (RUN_REGRESSOR_PARAMS
+    by default). The win classifier keeps fixed hyperparameters — it is not used
+    to serve predictions (the simulator derives win% from the run regressors).
+    """
     if model_dir is None:
         model_dir = _DEFAULT_MODEL_DIR
     model_dir = Path(model_dir)
     model_dir.mkdir(parents=True, exist_ok=True)
+
+    run_params = dict(params) if params is not None else dict(RUN_REGRESSOR_PARAMS)
 
     df = build_training_data(training_df) if 'home_win' not in training_df.columns else training_df
     X = df[FEATURE_COLUMNS].fillna(0).values
@@ -35,16 +61,12 @@ def train_models(training_df: pd.DataFrame, model_dir: Path = None) -> dict:
     win_model.fit(X, df['home_win'].values)
 
     runs_home_model = XGBRegressor(
-        n_estimators=200, max_depth=4, learning_rate=0.05,
-        subsample=0.8, colsample_bytree=0.8,
-        random_state=42, n_jobs=-1,
+        random_state=42, n_jobs=-1, **run_params,
     )
     runs_home_model.fit(X, df['home_score'].values.astype(float))
 
     runs_away_model = XGBRegressor(
-        n_estimators=200, max_depth=4, learning_rate=0.05,
-        subsample=0.8, colsample_bytree=0.8,
-        random_state=42, n_jobs=-1,
+        random_state=42, n_jobs=-1, **run_params,
     )
     runs_away_model.fit(X, df['away_score'].values.astype(float))
 
