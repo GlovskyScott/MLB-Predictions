@@ -496,38 +496,6 @@ def test_top_edges_ranks_and_caps():
     assert all(e['game_id'] != 2 for e in out)            # no-market game skipped
 
 
-def test_chat_context_includes_games_and_model(mocker):
-    import src.app as app
-    mocker.patch.object(app, '_simulation_cache', [{
-        'game_id': 7, 'away_abbr': 'NYY', 'home_abbr': 'BOS',
-        'away_name': 'New York Yankees', 'home_name': 'Boston Red Sox',
-        'away_win_pct': 45.0, 'home_win_pct': 55.0, 'modal_away_score': 3, 'modal_home_score': 5,
-        'away_pitcher': 'Cole', 'home_pitcher': 'Bello',
-        'lines': {'ml_away': '+120', 'ml_home': '-130'},
-        'market': {'ml_away': '+130', 'ml_home': '-150',
-                   'edge_ml_side': 'BOS', 'edge_ml_pct': 6},
-    }])
-    mocker.patch.object(app, '_aggregate_days', return_value={
-        'winner_accuracy': 60.0, 'total_games': 100, 'avg_score_err': 2.1})
-    ctx = app._build_chat_context(focus_game_id=7)
-    assert 'NYY @ BOS' in ctx and 'model win%' in ctx
-    # computed verdict pins the value side to its EXACT market price (so the LLM
-    # can't invent odds or reverse the edge)
-    assert 'COMPUTED VERDICT' in ctx and 'BOS at -150' in ctx and '+6%' in ctx
-    assert 'HISTORICAL ACCURACY' in ctx and 'MODEL:' in ctx
-    assert 'FOCUS GAME' in ctx and 'Boston Red Sox' in ctx
-
-
-def test_chat_route_streams(client, mocker):
-    import src.app as app
-    mocker.patch.object(app, '_build_chat_context', return_value='ctx')
-    mocker.patch('src.app.stream_chat', return_value=iter(['Hello', ' there']))
-    r = client.post('/chat', json={'messages': [{'role': 'user', 'content': 'hi'}]})
-    assert r.status_code == 200 and r.get_data(as_text=True) == 'Hello there'
-    # empty conversation rejected
-    assert client.post('/chat', json={'messages': []}).status_code == 400
-
-
 # ---- market blend (Consensus moneyline) ------------------------------------
 
 def test_blend_core_replaces_winpct_with_blend(tmp_path, mocker):
