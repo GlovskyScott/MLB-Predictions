@@ -42,12 +42,14 @@
 const ACCENT = '#3b82f6', EDGE = '#34d399';
 const DATA = JSON.parse(document.getElementById('payload').textContent);
 const state = { tab: 'today', openId: null, sort: 'edge', innView: 'both', showLineups: false };
+let tomorrowGames = null;   // null = not fetched, 'loading' = in-flight, array = ready
+let tomorrowDateLabel = '';
 
 /* ---------- helpers ---------- */
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 function img(url, size) { return url ? `<img class="logo" src="${esc(url)}" alt="" loading="lazy" style="width:${size}px;height:${size}px;">` : ''; }
 function fmtTime(utc) { if (!utc) return 'TBD'; const d = new Date(utc); if (isNaN(d.getTime())) return 'TBD'; return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
-function gameById(id) { return DATA.games.find(g => g.id === id); }
+function gameById(id) { return DATA.games.find(g => g.id === id) || (Array.isArray(tomorrowGames) ? tomorrowGames.find(g => g.id === id) : null); }
 function probToML(p) { p = Math.min(0.95, Math.max(0.04, p)); return p >= 0.5 ? '-' + Math.round(p / (1 - p) * 100) : '+' + Math.round((1 - p) / p * 100); }
 function sortedGames() {
   const gs = [...DATA.games];
@@ -57,7 +59,7 @@ function sortedGames() {
 
 /* ---------- header tabs ---------- */
 function renderHeader() {
-  document.getElementById('dateLabel').textContent = DATA.dateLabel || '';
+  document.getElementById('dateLabel').textContent = (state.tab === 'tomorrow' && tomorrowDateLabel) ? tomorrowDateLabel : (DATA.dateLabel || '');
   const tabsEl = document.getElementById('tabs');
   // In the game drill-down the tabs are hidden, so drop the header's bottom
   // border — otherwise it reads as a stray line under the title — and add a
@@ -72,8 +74,20 @@ function renderHeader() {
     const on = state.tab === key;
     return `<div class="tap" data-tab="${key}" style="padding-bottom:11px;font:600 13.5px system-ui;color:${on ? '#f1f3f6' : '#5b616d'};border-bottom:2px solid ${on ? ACCENT : 'transparent'};">${label}</div>`;
   };
-  tabsEl.innerHTML = `<div style="display:flex;gap:20px;padding:16px 18px 0;overflow-x:auto;scrollbar-width:none;">${tab('today', 'Today')}${tab('salami', 'Salami')}${tab('track', 'Record')}${tab('settings', 'Settings')}</div>`;
-  tabsEl.querySelectorAll('[data-tab]').forEach(el => el.onclick = () => { state.tab = el.dataset.tab; render(); });
+  tabsEl.innerHTML = `<div style="display:flex;gap:20px;padding:16px 18px 0;overflow-x:auto;scrollbar-width:none;">${tab('today', 'Today')}${tab('tomorrow', 'Tomorrow')}${tab('salami', 'Salami')}${tab('track', 'Record')}${tab('settings', 'Settings')}</div>`;
+  tabsEl.querySelectorAll('[data-tab]').forEach(el => el.onclick = () => {
+    state.tab = el.dataset.tab;
+    if (el.dataset.tab === 'tomorrow' && tomorrowGames === null) {
+      tomorrowGames = 'loading';
+      render();
+      fetch('/api/games/tomorrow')
+        .then(r => r.json())
+        .then(data => { tomorrowGames = data.games; tomorrowDateLabel = data.dateLabel; if (state.tab === 'tomorrow') render(false); })
+        .catch(() => { tomorrowGames = []; if (state.tab === 'tomorrow') render(false); });
+      return;
+    }
+    render();
+  });
 }
 
 /* ---------- TODAY ---------- */
@@ -268,6 +282,41 @@ function renderSalami() {
   </div>`;
 }
 
+/* ---------- TOMORROW ---------- */
+function sortedTomorrowGames() {
+  const gs = [...(Array.isArray(tomorrowGames) ? tomorrowGames : [])];
+  gs.sort((a, b) => state.sort === 'time' ? (a.utc || '~').localeCompare(b.utc || '~') : (b.edgePct - a.edgePct));
+  return gs;
+}
+function renderTomorrow() {
+  if (tomorrowGames === null || tomorrowGames === 'loading') {
+    return `<div style="padding:60px 18px;text-align:center;color:#646a76;font:500 13px system-ui;">Loading tomorrow's games…</div>`;
+  }
+  const gs = sortedTomorrowGames();
+  const edges = gs.filter(g => g.hasEdge), none = gs.filter(g => !g.hasEdge);
+  const seg = (on, key, label) => `<div class="tap" data-sort="${key}" style="padding:4px 10px;border-radius:6px;font:600 11px system-ui;color:${on ? '#f1f3f6' : '#646a76'};background:${on ? '#222834' : 'transparent'};">${label}</div>`;
+  let html = `<div style="padding:0 10px 40px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:14px 8px 6px;">
+      <div style="display:flex;align-items:center;gap:7px;color:#6b7280;font:500 11.5px system-ui;">
+        <span style="width:6px;height:6px;border-radius:50%;background:${EDGE};display:inline-block;"></span>
+        <span style="color:#cfd3da;font-weight:700;">${DATA.accAccuracy}% hit rate on moneyline</span>&nbsp;last 7 days
+      </div>
+      <div style="display:flex;background:#13161d;border:1px solid #1e222b;border-radius:8px;padding:2px;">${seg(state.sort === 'edge', 'edge', 'Edge')}${seg(state.sort === 'time', 'time', 'Time')}</div>
+    </div>`;
+  if (!gs.length) {
+    html += `<div style="padding:40px 12px;text-align:center;color:#646a76;font:500 13px system-ui;">No games scheduled tomorrow.</div>`;
+  } else {
+    html += `<div style="font:700 10px system-ui;letter-spacing:1.4px;color:#565c68;text-transform:uppercase;padding:8px 8px 6px;">Best edges tomorrow</div>`;
+    html += edges.length ? edges.map(g => todayRow(g, true)).join('') : `<div style="padding:6px 10px;color:#565c68;font:500 12px system-ui;">No edges vs the market tomorrow.</div>`;
+    if (none.length) {
+      html += `<div style="font:700 10px system-ui;letter-spacing:1.4px;color:#3f444e;text-transform:uppercase;padding:18px 8px 6px;">No edge — model agrees with market</div>`;
+      html += none.map(g => todayRow(g, false)).join('');
+    }
+  }
+  html += `</div>`;
+  return html;
+}
+
 /* ---------- TRACK RECORD ---------- */
 function renderTrack() {
   const t = DATA.track;
@@ -366,7 +415,7 @@ function renderDetail() {
   const lineHtml = (arr) => arr.length ? arr.map((name, i) => `<div style="display:flex;gap:8px;padding:6px 8px;border-bottom:1px solid #15181f;font:500 12px system-ui;color:#c2c6cf;"><span style="color:#4d525d;">${i + 1}</span>${esc(name)}</div>`).join('') : `<div style="padding:6px 8px;font:500 12px system-ui;color:#565c68;">Not posted yet</div>`;
 
   return `<div style="padding:0 0 48px;">
-    <div id="detailBack" class="tap" style="display:flex;align-items:center;gap:6px;padding:14px 18px 10px;font:600 12.5px system-ui;color:#8a909c;">‹ Back to today</div>
+    <div id="detailBack" class="tap" style="display:flex;align-items:center;gap:6px;padding:14px 18px 10px;font:600 12.5px system-ui;color:#8a909c;">‹ Back to ${state.tab === 'tomorrow' ? 'tomorrow' : 'today'}</div>
 
     <div style="padding:4px 18px 0;">
       <div style="background:linear-gradient(150deg,${g.awayTint} 0%,#0f1217 46%,#0f1217 60%,${g.homeTint} 100%);border:1px solid #1d212a;border-radius:16px;padding:18px;">
@@ -455,6 +504,10 @@ function render(scrollTop = true) {
     setEdge(state.openId);      // restore the AI edge angle in "The bet"
   } else if (state.tab === 'today') {
     screen.innerHTML = renderToday();
+    screen.querySelectorAll('[data-open]').forEach(el => el.onclick = () => openGame(+el.dataset.open));
+    screen.querySelectorAll('[data-sort]').forEach(el => el.onclick = () => { state.sort = el.dataset.sort; render(false); });
+  } else if (state.tab === 'tomorrow') {
+    screen.innerHTML = renderTomorrow();
     screen.querySelectorAll('[data-open]').forEach(el => el.onclick = () => openGame(+el.dataset.open));
     screen.querySelectorAll('[data-sort]').forEach(el => el.onclick = () => { state.sort = el.dataset.sort; render(false); });
   } else if (state.tab === 'salami') {
