@@ -588,6 +588,16 @@ function streamExplanation(gameId) {
 }
 
 render();
+
+setInterval(() => {
+  fetch('/api/games/today')
+    .then(r => r.json())
+    .then(data => {
+      DATA.games = data.games;
+      if (state.tab === 'salami') render(false);
+    })
+    .catch(() => {});
+}, 60000);
 </script>
 </body>
 </html>

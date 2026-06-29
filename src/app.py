@@ -948,6 +948,22 @@ def create_app(testing: bool = False) -> Flask:
         totals['accuracy'] = round(100 * totals['correct'] / totals['n'], 1) if totals['n'] else 0
         return render_template('history.html', days=days, totals=totals, version=version)
 
+    @app.route('/api/games/today')
+    def api_today():
+        today = date.today().strftime('%Y-%m-%d')
+        live_by_id = {g['game_id']: g for g in get_schedule(today)}
+        updated = []
+        for g in _simulation_cache:
+            live = live_by_id.get(g.get('game_id', -1))
+            merged = {**g, **(
+                {'status': live['status'], 'home_score': live['home_score'], 'away_score': live['away_score']}
+                if live else {}
+            )}
+            ui = _game_ui(merged)
+            if ui is not None:
+                updated.append(ui)
+        return jsonify({'games': updated})
+
     @app.route('/api/games/tomorrow')
     def api_tomorrow():
         global _tomorrow_simulation_cache, _last_tomorrow_date
