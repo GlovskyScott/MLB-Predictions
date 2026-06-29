@@ -2,7 +2,7 @@ import json
 import threading
 import requests as _requests
 import pandas as pd
-from flask import Flask, render_template, redirect, url_for, request, Response, stream_with_context, abort
+from flask import Flask, render_template, redirect, url_for, request, Response, stream_with_context, abort, jsonify
 from datetime import date, timedelta
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -44,6 +44,8 @@ _REFRESH_WINDOW_DAYS = 4  # only re-fetch finals from the live API for dates thi
 
 _simulation_cache: list[dict] = []
 _last_simulated_date: str = ""
+_tomorrow_simulation_cache: list[dict] = []
+_last_tomorrow_date: str = ""
 _results_cache: dict = {}
 _last_results_date: str = ""
 _actuals_cache: dict = {}  # settled date -> {game_id: final game}; avoids redundant live refreshes
@@ -922,6 +924,20 @@ def create_app(testing: bool = False) -> Flask:
         totals['accuracy'] = round(100 * totals['correct'] / totals['n'], 1) if totals['n'] else 0
         return render_template('history.html', days=days, totals=totals, version=version)
 
+    @app.route('/api/games/tomorrow')
+    def api_tomorrow():
+        global _tomorrow_simulation_cache, _last_tomorrow_date
+        tomorrow = (date.today() + timedelta(days=1)).strftime('%Y-%m-%d')
+        if not _tomorrow_simulation_cache or _last_tomorrow_date != tomorrow:
+            _tomorrow_simulation_cache = run_daily_simulation(tomorrow)
+            _last_tomorrow_date = tomorrow
+        games_ui = [u for g in _tomorrow_simulation_cache if (u := _game_ui(g)) is not None]
+        dt = date.today() + timedelta(days=1)
+        return jsonify({
+            'games': games_ui,
+            'dateLabel': dt.strftime('%a, %b ') + str(dt.day),
+        })
+
     @app.route('/edge/<int:game_id>')
     def edge(game_id: int):
         """SSE: a one-sentence (<=10 word) AI edge angle for 'The bet', streamed
@@ -929,6 +945,8 @@ def create_app(testing: bool = False) -> Flask:
         no text, so the client keeps its deterministic fallback line."""
         headers = {'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'}
         game = next((g for g in _simulation_cache if g.get('game_id') == game_id), None)
+        if not game:
+            game = next((g for g in _tomorrow_simulation_cache if g.get('game_id') == game_id), None)
         if not game:
             return Response("data: [DONE]\n\n", mimetype='text/event-stream', headers=headers)
         if game_id in _edge_summary_cache:
@@ -944,6 +962,8 @@ def create_app(testing: bool = False) -> Flask:
     @app.route('/explain/<int:game_id>')
     def explain(game_id: int):
         game = next((g for g in _simulation_cache if g.get('game_id') == game_id), None)
+        if not game:
+            game = next((g for g in _tomorrow_simulation_cache if g.get('game_id') == game_id), None)
         if not game:
             return Response(
                 f"data: {json.dumps({'error': 'Game not found — try refreshing the page.'})}\n\n",
