@@ -42,12 +42,14 @@
 const ACCENT = '#3b82f6', EDGE = '#34d399';
 const DATA = JSON.parse(document.getElementById('payload').textContent);
 const state = { tab: 'today', openId: null, sort: 'edge', innView: 'both', showLineups: false };
+let tomorrowGames = null;   // null = not fetched, 'loading' = in-flight, array = ready
+let tomorrowDateLabel = '';
 
 /* ---------- helpers ---------- */
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 function img(url, size) { return url ? `<img class="logo" src="${esc(url)}" alt="" loading="lazy" style="width:${size}px;height:${size}px;">` : ''; }
 function fmtTime(utc) { if (!utc) return 'TBD'; const d = new Date(utc); if (isNaN(d.getTime())) return 'TBD'; return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
-function gameById(id) { return DATA.games.find(g => g.id === id); }
+function gameById(id) { return DATA.games.find(g => g.id === id) || (Array.isArray(tomorrowGames) ? tomorrowGames.find(g => g.id === id) : null); }
 function probToML(p) { p = Math.min(0.95, Math.max(0.04, p)); return p >= 0.5 ? '-' + Math.round(p / (1 - p) * 100) : '+' + Math.round((1 - p) / p * 100); }
 function sortedGames() {
   const gs = [...DATA.games];
@@ -57,7 +59,7 @@ function sortedGames() {
 
 /* ---------- header tabs ---------- */
 function renderHeader() {
-  document.getElementById('dateLabel').textContent = DATA.dateLabel || '';
+  document.getElementById('dateLabel').textContent = (state.tab === 'tomorrow' && tomorrowDateLabel) ? tomorrowDateLabel : (DATA.dateLabel || '');
   const tabsEl = document.getElementById('tabs');
   // In the game drill-down the tabs are hidden, so drop the header's bottom
   // border — otherwise it reads as a stray line under the title — and add a
@@ -72,8 +74,20 @@ function renderHeader() {
     const on = state.tab === key;
     return `<div class="tap" data-tab="${key}" style="padding-bottom:11px;font:600 13.5px system-ui;color:${on ? '#f1f3f6' : '#5b616d'};border-bottom:2px solid ${on ? ACCENT : 'transparent'};">${label}</div>`;
   };
-  tabsEl.innerHTML = `<div style="display:flex;gap:24px;padding:16px 18px 0;">${tab('today', 'Today')}${tab('track', 'Track Record')}${tab('settings', 'Settings')}</div>`;
-  tabsEl.querySelectorAll('[data-tab]').forEach(el => el.onclick = () => { state.tab = el.dataset.tab; render(); });
+  tabsEl.innerHTML = `<div style="display:flex;gap:20px;padding:16px 18px 0;overflow-x:auto;scrollbar-width:none;">${tab('today', 'Today')}${tab('tomorrow', 'Tomorrow')}${tab('salami', 'Salami')}${tab('track', 'Record')}${tab('settings', 'Settings')}</div>`;
+  tabsEl.querySelectorAll('[data-tab]').forEach(el => el.onclick = () => {
+    state.tab = el.dataset.tab;
+    if (el.dataset.tab === 'tomorrow' && tomorrowGames === null) {
+      tomorrowGames = 'loading';
+      render();
+      fetch('/api/games/tomorrow')
+        .then(r => r.json())
+        .then(data => { tomorrowGames = data.games; tomorrowDateLabel = data.dateLabel; if (state.tab === 'tomorrow') render(false); })
+        .catch(() => { tomorrowGames = []; if (state.tab === 'tomorrow') render(false); });
+      return;
+    }
+    render();
+  });
 }
 
 /* ---------- TODAY ---------- */
@@ -115,6 +129,185 @@ function renderToday() {
   } else {
     html += `<div style="font:700 10px system-ui;letter-spacing:1.4px;color:#565c68;text-transform:uppercase;padding:8px 8px 6px;">Best edges today</div>`;
     html += edges.length ? edges.map(g => todayRow(g, true)).join('') : `<div style="padding:6px 10px;color:#565c68;font:500 12px system-ui;">No edges vs the market today.</div>`;
+    if (none.length) {
+      html += `<div style="font:700 10px system-ui;letter-spacing:1.4px;color:#3f444e;text-transform:uppercase;padding:18px 8px 6px;">No edge — model agrees with market</div>`;
+      html += none.map(g => todayRow(g, false)).join('');
+    }
+  }
+  html += `</div>`;
+  return html;
+}
+
+/* ---------- SALAMI TRACKER ---------- */
+function renderSalami() {
+  const gs = DATA.games;
+  const final = gs.filter(g => g.status === 'Final');
+  const live  = gs.filter(g => g.status === 'In Progress' || g.status === 'Game Over');
+  const upcoming = gs.filter(g => g.status !== 'Final' && g.status !== 'In Progress' && g.status !== 'Game Over');
+
+  const sum = (arr, fn) => arr.reduce((s, g) => s + (fn(g) || 0), 0);
+
+  // Actual runs scored — only real numbers from finished/live games
+  const lockedAway = sum(final, g => g.awayActual);
+  const lockedHome = sum(final, g => g.homeActual);
+  const locked = lockedAway + lockedHome;
+
+  const liveAway = sum(live, g => g.awayActual);
+  const liveHome = sum(live, g => g.homeActual);
+  const liveTotal = liveAway + liveHome;
+
+  // Model projection across ALL games — stays constant as games start/finish
+  const estAway = sum(gs, g => g.projAway);
+  const estHome = sum(gs, g => g.projHome);
+  const estTotal = estAway + estHome;
+
+  // Remaining proj (upcoming only) — for sub-line display
+  const projAway = sum(upcoming, g => g.projAway);
+  const projHome = sum(upcoming, g => g.projHome);
+  const proj = projAway + projHome;
+
+  const scored = locked + liveTotal;
+  const pct = estTotal > 0 ? Math.round(scored / estTotal * 100) : 0;
+
+  // Running pace: actual runs from finished/live games + projections for remaining
+  const paceTotal = scored + proj;
+  const delta = paceTotal - estTotal;
+  const hasStarted = final.length > 0 || live.length > 0;
+
+  const statCard = (label, val, sub) =>
+    `<div style="background:#11141a;border:1px solid #1e222b;border-radius:12px;padding:13px 14px;">
+      <div style="font:600 9.5px system-ui;color:#646a76;text-transform:uppercase;letter-spacing:.6px;">${label}</div>
+      <div class="num" style="font:800 22px system-ui;color:#f1f3f6;margin-top:6px;letter-spacing:-.5px;">${val}</div>
+      <div style="font:500 10px system-ui;color:#737a86;margin-top:2px;line-height:1.4;">${sub}</div>
+    </div>`;
+
+  const gameRow = g => {
+    const isFinal = g.status === 'Final';
+    const isLive  = g.status === 'In Progress' || g.status === 'Game Over';
+    const icon = isFinal ? '✓' : isLive ? '⚡' : '·';
+    const iconColor = isFinal ? '#4caf50' : isLive ? '#facc15' : '#4d525d';
+    const nameColor = isFinal ? '#8a909c' : isLive ? '#eef0f4' : '#646a76';
+    let matchup, runLabel, runColor;
+    if (isFinal) {
+      matchup = `${esc(g.away)} ${g.awayActual}–${g.homeActual} ${esc(g.home)}`;
+      runLabel = `${(g.awayActual||0)+(g.homeActual||0)} runs`;
+      runColor = '#c2c6cf';
+    } else if (isLive) {
+      matchup = `${esc(g.away)} ${g.awayActual}–${g.homeActual} ${esc(g.home)}`;
+      runLabel = `${(g.awayActual||0)+(g.homeActual||0)}+ live`;
+      runColor = '#facc15';
+    } else {
+      matchup = `${esc(g.away)} @ ${esc(g.home)}`;
+      runLabel = `proj ${(g.projAway||0)+(g.projHome||0)}`;
+      runColor = '#4d525d';
+    }
+    const sub = isFinal ? '' : isLive ? 'In progress' : fmtTime(g.utc);
+    return `<div style="display:flex;align-items:center;gap:10px;padding:10px 4px;border-top:1px solid #15181f;">
+      <div style="width:14px;text-align:center;font:700 11px system-ui;color:${iconColor};">${icon}</div>
+      <div style="flex:1;min-width:0;">
+        <div style="font:600 12.5px system-ui;color:${nameColor};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${matchup}</div>
+        ${sub ? `<div style="font:500 10px system-ui;color:#565c68;margin-top:1px;">${sub}</div>` : ''}
+      </div>
+      <div class="num" style="font:700 11.5px system-ui;color:${runColor};flex-shrink:0;">${runLabel}</div>
+    </div>`;
+  };
+
+  const sorted = [
+    ...final.sort((a,b)=>(a.utc||'').localeCompare(b.utc||'')),
+    ...live.sort((a,b)=>(a.utc||'').localeCompare(b.utc||'')),
+    ...upcoming.sort((a,b)=>(a.utc||'~').localeCompare(b.utc||'~')),
+  ];
+
+  const awaySubLine = [
+    lockedAway ? `${lockedAway} final` : '',
+    liveAway   ? `${liveAway}+ live` : '',
+    projAway   ? `+${projAway} proj` : '',
+  ].filter(Boolean).join(' · ') || 'no runs yet';
+  const homeSubLine = [
+    lockedHome ? `${lockedHome} final` : '',
+    liveHome   ? `${liveHome}+ live` : '',
+    projHome   ? `+${projHome} proj` : '',
+  ].filter(Boolean).join(' · ') || 'no runs yet';
+
+  return `<div style="padding:14px 16px 48px;">
+    <div style="font:700 10px system-ui;letter-spacing:1.4px;color:#565c68;text-transform:uppercase;padding:0 2px 12px;">Grand Salami</div>
+
+    <div style="background:#11141a;border:1px solid #1e222b;border-radius:14px;padding:16px;margin-bottom:14px;">
+      <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:8px;">
+        <div>
+          <div style="font:600 10px system-ui;color:#646a76;text-transform:uppercase;letter-spacing:.6px;margin-bottom:4px;">Runs scored</div>
+          <div style="display:flex;align-items:baseline;gap:8px;">
+            <div class="num" style="font:800 48px system-ui;color:#f1f3f6;letter-spacing:-2px;">${scored}</div>
+            ${liveTotal ? `<div style="font:700 13px system-ui;color:#facc15;">+${liveTotal} live</div>` : ''}
+          </div>
+        </div>
+        <div style="text-align:right;padding-bottom:6px;">
+          <div style="font:600 10px system-ui;color:#565c68;text-transform:uppercase;letter-spacing:.6px;margin-bottom:3px;">Est. total</div>
+          <div class="num" style="font:700 22px system-ui;color:#737a86;">${estTotal}</div>
+        </div>
+      </div>
+      <div style="margin-top:14px;">
+        <div style="height:6px;border-radius:4px;background:#15181f;overflow:hidden;">
+          <div style="height:100%;width:${pct}%;background:linear-gradient(90deg,#4caf50,#34d399);border-radius:4px;transition:width .4s;"></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-top:5px;font:500 10px system-ui;color:#4d525d;">
+          <span>${pct}% of estimated total scored</span>
+          <span>${final.length} final · ${live.length} live · ${upcoming.length} upcoming</span>
+        </div>
+        ${hasStarted ? (() => {
+          const absDelta = Math.abs(delta);
+          const isOver = delta > 0;
+          const isUnder = delta < 0;
+          const label = isOver ? `OVER +${absDelta}` : isUnder ? `UNDER −${absDelta}` : 'ON PACE';
+          const bg   = isOver ? 'rgba(52,211,153,.13)' : isUnder ? 'rgba(239,83,80,.13)' : 'rgba(255,255,255,.05)';
+          const col  = isOver ? '#34d399' : isUnder ? '#ef5350' : '#737a86';
+          return `<div style="display:flex;align-items:center;gap:8px;margin-top:10px;">
+            <span style="font:800 11px system-ui;letter-spacing:.6px;padding:4px 11px;border-radius:20px;background:${bg};color:${col};">${label}</span>
+            <span style="font:500 10px system-ui;color:#4d525d;">vs model est. ${estTotal} runs</span>
+          </div>`;
+        })() : ''}
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:20px;">
+      ${statCard('Away Runs', lockedAway + liveAway, awaySubLine)}
+      ${statCard('Home Runs', lockedHome + liveHome, homeSubLine)}
+      ${statCard('Est. Total', estTotal, `${scored} scored · +${proj} proj`)}
+    </div>
+
+    <div style="font:700 10px system-ui;letter-spacing:1.4px;color:#565c68;text-transform:uppercase;padding:0 2px 6px;">Today's Games</div>
+    <div style="background:#11141a;border:1px solid #1e222b;border-radius:14px;padding:4px 12px;">
+      ${sorted.map(gameRow).join('') || '<div style="padding:16px 4px;color:#565c68;font:500 12px system-ui;">No games today.</div>'}
+    </div>
+  </div>`;
+}
+
+/* ---------- TOMORROW ---------- */
+function sortedTomorrowGames() {
+  const gs = [...(Array.isArray(tomorrowGames) ? tomorrowGames : [])];
+  gs.sort((a, b) => state.sort === 'time' ? (a.utc || '~').localeCompare(b.utc || '~') : (b.edgePct - a.edgePct));
+  return gs;
+}
+function renderTomorrow() {
+  if (tomorrowGames === null || tomorrowGames === 'loading') {
+    return `<div style="padding:60px 18px;text-align:center;color:#646a76;font:500 13px system-ui;">Loading tomorrow's games…</div>`;
+  }
+  const gs = sortedTomorrowGames();
+  const edges = gs.filter(g => g.hasEdge), none = gs.filter(g => !g.hasEdge);
+  const seg = (on, key, label) => `<div class="tap" data-sort="${key}" style="padding:4px 10px;border-radius:6px;font:600 11px system-ui;color:${on ? '#f1f3f6' : '#646a76'};background:${on ? '#222834' : 'transparent'};">${label}</div>`;
+  let html = `<div style="padding:0 10px 40px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:14px 8px 6px;">
+      <div style="display:flex;align-items:center;gap:7px;color:#6b7280;font:500 11.5px system-ui;">
+        <span style="width:6px;height:6px;border-radius:50%;background:${EDGE};display:inline-block;"></span>
+        <span style="color:#cfd3da;font-weight:700;">${DATA.accAccuracy}% hit rate on moneyline</span>&nbsp;last 7 days
+      </div>
+      <div style="display:flex;background:#13161d;border:1px solid #1e222b;border-radius:8px;padding:2px;">${seg(state.sort === 'edge', 'edge', 'Edge')}${seg(state.sort === 'time', 'time', 'Time')}</div>
+    </div>`;
+  if (!gs.length) {
+    html += `<div style="padding:40px 12px;text-align:center;color:#646a76;font:500 13px system-ui;">No games scheduled tomorrow.</div>`;
+  } else {
+    html += `<div style="font:700 10px system-ui;letter-spacing:1.4px;color:#565c68;text-transform:uppercase;padding:8px 8px 6px;">Best edges tomorrow</div>`;
+    html += edges.length ? edges.map(g => todayRow(g, true)).join('') : `<div style="padding:6px 10px;color:#565c68;font:500 12px system-ui;">No edges vs the market tomorrow.</div>`;
     if (none.length) {
       html += `<div style="font:700 10px system-ui;letter-spacing:1.4px;color:#3f444e;text-transform:uppercase;padding:18px 8px 6px;">No edge — model agrees with market</div>`;
       html += none.map(g => todayRow(g, false)).join('');
@@ -222,7 +415,7 @@ function renderDetail() {
   const lineHtml = (arr) => arr.length ? arr.map((name, i) => `<div style="display:flex;gap:8px;padding:6px 8px;border-bottom:1px solid #15181f;font:500 12px system-ui;color:#c2c6cf;"><span style="color:#4d525d;">${i + 1}</span>${esc(name)}</div>`).join('') : `<div style="padding:6px 8px;font:500 12px system-ui;color:#565c68;">Not posted yet</div>`;
 
   return `<div style="padding:0 0 48px;">
-    <div id="detailBack" class="tap" style="display:flex;align-items:center;gap:6px;padding:14px 18px 10px;font:600 12.5px system-ui;color:#8a909c;">‹ Back to today</div>
+    <div id="detailBack" class="tap" style="display:flex;align-items:center;gap:6px;padding:14px 18px 10px;font:600 12.5px system-ui;color:#8a909c;">‹ Back to ${state.tab === 'tomorrow' ? 'tomorrow' : 'today'}</div>
 
     <div style="padding:4px 18px 0;">
       <div style="background:linear-gradient(150deg,${g.awayTint} 0%,#0f1217 46%,#0f1217 60%,${g.homeTint} 100%);border:1px solid #1d212a;border-radius:16px;padding:18px;">
@@ -313,6 +506,12 @@ function render(scrollTop = true) {
     screen.innerHTML = renderToday();
     screen.querySelectorAll('[data-open]').forEach(el => el.onclick = () => openGame(+el.dataset.open));
     screen.querySelectorAll('[data-sort]').forEach(el => el.onclick = () => { state.sort = el.dataset.sort; render(false); });
+  } else if (state.tab === 'tomorrow') {
+    screen.innerHTML = renderTomorrow();
+    screen.querySelectorAll('[data-open]').forEach(el => el.onclick = () => openGame(+el.dataset.open));
+    screen.querySelectorAll('[data-sort]').forEach(el => el.onclick = () => { state.sort = el.dataset.sort; render(false); });
+  } else if (state.tab === 'salami') {
+    screen.innerHTML = renderSalami();
   } else if (state.tab === 'track') {
     screen.innerHTML = renderTrack();
   } else {
@@ -389,6 +588,16 @@ function streamExplanation(gameId) {
 }
 
 render();
+
+setInterval(() => {
+  fetch('/api/games/today')
+    .then(r => r.json())
+    .then(data => {
+      DATA.games = data.games;
+      if (state.tab === 'salami') render(false);
+    })
+    .catch(() => {});
+}, 60000);
 </script>
 </body>
 </html>

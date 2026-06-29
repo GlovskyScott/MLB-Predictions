@@ -2,7 +2,7 @@ import json
 import threading
 import requests as _requests
 import pandas as pd
-from flask import Flask, render_template, redirect, url_for, request, Response, stream_with_context, abort
+from flask import Flask, render_template, redirect, url_for, request, Response, stream_with_context, abort, jsonify
 from datetime import date, timedelta
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -44,6 +44,8 @@ _REFRESH_WINDOW_DAYS = 4  # only re-fetch finals from the live API for dates thi
 
 _simulation_cache: list[dict] = []
 _last_simulated_date: str = ""
+_tomorrow_simulation_cache: list[dict] = []
+_last_tomorrow_date: str = ""
 _results_cache: dict = {}
 _last_results_date: str = ""
 _actuals_cache: dict = {}  # settled date -> {game_id: final game}; avoids redundant live refreshes
@@ -678,6 +680,21 @@ def _weather_str(g: dict) -> str:
     return " · ".join(parts)
 
 
+def _to_int_score(v) -> "int | None":
+    """Return v as int or None if absent/NaN."""
+    if v is None:
+        return None
+    try:
+        if pd.isna(v):
+            return None
+    except (TypeError, ValueError):
+        pass
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return None
+
+
 def _game_ui(g: dict) -> dict | None:
     """Project an enriched sim game into the JSON the Edge UI consumes.
 
@@ -701,6 +718,10 @@ def _game_ui(g: dict) -> dict | None:
     ma, mh = g.get('modal_away_score'), g.get('modal_home_score')
     if ma is None or mh is None:  # fall back to medians (real cores always have modal)
         ma, mh = round(g.get('median_away_score', 0)), round(g.get('median_home_score', 0))
+    status = g.get('status', '')
+    is_active = status in ('Final', 'In Progress', 'Game Over')
+    home_actual = _to_int_score(g.get('home_score')) if is_active else None
+    away_actual = _to_int_score(g.get('away_score')) if is_active else None
     return {
         'id': g.get('game_id'),
         'away': g.get('away_abbr'), 'home': g.get('home_abbr'),
@@ -724,6 +745,11 @@ def _game_ui(g: dict) -> dict | None:
         'awayP': g.get('away_pitcher', 'TBD'), 'homeP': g.get('home_pitcher', 'TBD'),
         'venue': g.get('venue_name', ''), 'weather': _weather_str(g),
         'awayLineup': lineup.get('away', []), 'homeLineup': lineup.get('home', []),
+        'status': status,
+        'homeActual': home_actual,
+        'awayActual': away_actual,
+        'projHome': round(g.get('median_home_score') or 0),
+        'projAway': round(g.get('median_away_score') or 0),
     }
 
 
@@ -922,6 +948,36 @@ def create_app(testing: bool = False) -> Flask:
         totals['accuracy'] = round(100 * totals['correct'] / totals['n'], 1) if totals['n'] else 0
         return render_template('history.html', days=days, totals=totals, version=version)
 
+    @app.route('/api/games/today')
+    def api_today():
+        today = date.today().strftime('%Y-%m-%d')
+        live_by_id = {g['game_id']: g for g in get_schedule(today)}
+        updated = []
+        for g in _simulation_cache:
+            live = live_by_id.get(g.get('game_id', -1))
+            merged = {**g, **(
+                {'status': live['status'], 'home_score': live['home_score'], 'away_score': live['away_score']}
+                if live else {}
+            )}
+            ui = _game_ui(merged)
+            if ui is not None:
+                updated.append(ui)
+        return jsonify({'games': updated})
+
+    @app.route('/api/games/tomorrow')
+    def api_tomorrow():
+        global _tomorrow_simulation_cache, _last_tomorrow_date
+        tomorrow = (date.today() + timedelta(days=1)).strftime('%Y-%m-%d')
+        if not _tomorrow_simulation_cache or _last_tomorrow_date != tomorrow:
+            _tomorrow_simulation_cache = run_daily_simulation(tomorrow)
+            _last_tomorrow_date = tomorrow
+        games_ui = [u for g in _tomorrow_simulation_cache if (u := _game_ui(g)) is not None]
+        dt = date.today() + timedelta(days=1)
+        return jsonify({
+            'games': games_ui,
+            'dateLabel': dt.strftime('%a, %b ') + str(dt.day),
+        })
+
     @app.route('/edge/<int:game_id>')
     def edge(game_id: int):
         """SSE: a one-sentence (<=10 word) AI edge angle for 'The bet', streamed
@@ -929,6 +985,8 @@ def create_app(testing: bool = False) -> Flask:
         no text, so the client keeps its deterministic fallback line."""
         headers = {'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'}
         game = next((g for g in _simulation_cache if g.get('game_id') == game_id), None)
+        if not game:
+            game = next((g for g in _tomorrow_simulation_cache if g.get('game_id') == game_id), None)
         if not game:
             return Response("data: [DONE]\n\n", mimetype='text/event-stream', headers=headers)
         if game_id in _edge_summary_cache:
@@ -944,6 +1002,8 @@ def create_app(testing: bool = False) -> Flask:
     @app.route('/explain/<int:game_id>')
     def explain(game_id: int):
         game = next((g for g in _simulation_cache if g.get('game_id') == game_id), None)
+        if not game:
+            game = next((g for g in _tomorrow_simulation_cache if g.get('game_id') == game_id), None)
         if not game:
             return Response(
                 f"data: {json.dumps({'error': 'Game not found — try refreshing the page.'})}\n\n",
