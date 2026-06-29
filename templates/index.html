@@ -72,7 +72,7 @@ function renderHeader() {
     const on = state.tab === key;
     return `<div class="tap" data-tab="${key}" style="padding-bottom:11px;font:600 13.5px system-ui;color:${on ? '#f1f3f6' : '#5b616d'};border-bottom:2px solid ${on ? ACCENT : 'transparent'};">${label}</div>`;
   };
-  tabsEl.innerHTML = `<div style="display:flex;gap:24px;padding:16px 18px 0;">${tab('today', 'Today')}${tab('track', 'Track Record')}${tab('settings', 'Settings')}</div>`;
+  tabsEl.innerHTML = `<div style="display:flex;gap:20px;padding:16px 18px 0;overflow-x:auto;scrollbar-width:none;">${tab('today', 'Today')}${tab('salami', 'Salami')}${tab('track', 'Record')}${tab('settings', 'Settings')}</div>`;
   tabsEl.querySelectorAll('[data-tab]').forEach(el => el.onclick = () => { state.tab = el.dataset.tab; render(); });
 }
 
@@ -122,6 +122,133 @@ function renderToday() {
   }
   html += `</div>`;
   return html;
+}
+
+/* ---------- SALAMI TRACKER ---------- */
+function renderSalami() {
+  const gs = DATA.games;
+  const final = gs.filter(g => g.status === 'Final');
+  const live  = gs.filter(g => g.status === 'In Progress' || g.status === 'Game Over');
+  const upcoming = gs.filter(g => g.status !== 'Final' && g.status !== 'In Progress' && g.status !== 'Game Over');
+
+  const sum = (arr, fn) => arr.reduce((s, g) => s + (fn(g) || 0), 0);
+
+  // Actual runs scored — only real numbers from finished/live games
+  const lockedAway = sum(final, g => g.awayActual);
+  const lockedHome = sum(final, g => g.homeActual);
+  const locked = lockedAway + lockedHome;
+
+  const liveAway = sum(live, g => g.awayActual);
+  const liveHome = sum(live, g => g.homeActual);
+  const liveTotal = liveAway + liveHome;
+
+  // Model projection across ALL games — stays constant as games start/finish
+  const estAway = sum(gs, g => g.projAway);
+  const estHome = sum(gs, g => g.projHome);
+  const estTotal = estAway + estHome;
+
+  // Remaining proj (upcoming only) — for sub-line display
+  const projAway = sum(upcoming, g => g.projAway);
+  const projHome = sum(upcoming, g => g.projHome);
+  const proj = projAway + projHome;
+
+  const scored = locked + liveTotal;
+  const pct = estTotal > 0 ? Math.round(scored / estTotal * 100) : 0;
+
+  const statCard = (label, val, sub) =>
+    `<div style="background:#11141a;border:1px solid #1e222b;border-radius:12px;padding:13px 14px;">
+      <div style="font:600 9.5px system-ui;color:#646a76;text-transform:uppercase;letter-spacing:.6px;">${label}</div>
+      <div class="num" style="font:800 22px system-ui;color:#f1f3f6;margin-top:6px;letter-spacing:-.5px;">${val}</div>
+      <div style="font:500 10px system-ui;color:#737a86;margin-top:2px;line-height:1.4;">${sub}</div>
+    </div>`;
+
+  const gameRow = g => {
+    const isFinal = g.status === 'Final';
+    const isLive  = g.status === 'In Progress' || g.status === 'Game Over';
+    const icon = isFinal ? '✓' : isLive ? '⚡' : '·';
+    const iconColor = isFinal ? '#4caf50' : isLive ? '#facc15' : '#4d525d';
+    const nameColor = isFinal ? '#8a909c' : isLive ? '#eef0f4' : '#646a76';
+    let matchup, runLabel, runColor;
+    if (isFinal) {
+      matchup = `${esc(g.away)} ${g.awayActual}–${g.homeActual} ${esc(g.home)}`;
+      runLabel = `${(g.awayActual||0)+(g.homeActual||0)} runs`;
+      runColor = '#c2c6cf';
+    } else if (isLive) {
+      matchup = `${esc(g.away)} ${g.awayActual}–${g.homeActual} ${esc(g.home)}`;
+      runLabel = `${(g.awayActual||0)+(g.homeActual||0)}+ live`;
+      runColor = '#facc15';
+    } else {
+      matchup = `${esc(g.away)} @ ${esc(g.home)}`;
+      runLabel = `proj ${(g.projAway||0)+(g.projHome||0)}`;
+      runColor = '#4d525d';
+    }
+    const sub = isFinal ? '' : isLive ? 'In progress' : fmtTime(g.utc);
+    return `<div style="display:flex;align-items:center;gap:10px;padding:10px 4px;border-top:1px solid #15181f;">
+      <div style="width:14px;text-align:center;font:700 11px system-ui;color:${iconColor};">${icon}</div>
+      <div style="flex:1;min-width:0;">
+        <div style="font:600 12.5px system-ui;color:${nameColor};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${matchup}</div>
+        ${sub ? `<div style="font:500 10px system-ui;color:#565c68;margin-top:1px;">${sub}</div>` : ''}
+      </div>
+      <div class="num" style="font:700 11.5px system-ui;color:${runColor};flex-shrink:0;">${runLabel}</div>
+    </div>`;
+  };
+
+  const sorted = [
+    ...final.sort((a,b)=>(a.utc||'').localeCompare(b.utc||'')),
+    ...live.sort((a,b)=>(a.utc||'').localeCompare(b.utc||'')),
+    ...upcoming.sort((a,b)=>(a.utc||'~').localeCompare(b.utc||'~')),
+  ];
+
+  const awaySubLine = [
+    lockedAway ? `${lockedAway} final` : '',
+    liveAway   ? `${liveAway}+ live` : '',
+    projAway   ? `+${projAway} proj` : '',
+  ].filter(Boolean).join(' · ') || 'no runs yet';
+  const homeSubLine = [
+    lockedHome ? `${lockedHome} final` : '',
+    liveHome   ? `${liveHome}+ live` : '',
+    projHome   ? `+${projHome} proj` : '',
+  ].filter(Boolean).join(' · ') || 'no runs yet';
+
+  return `<div style="padding:14px 16px 48px;">
+    <div style="font:700 10px system-ui;letter-spacing:1.4px;color:#565c68;text-transform:uppercase;padding:0 2px 12px;">Grand Salami</div>
+
+    <div style="background:#11141a;border:1px solid #1e222b;border-radius:14px;padding:16px;margin-bottom:14px;">
+      <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:8px;">
+        <div>
+          <div style="font:600 10px system-ui;color:#646a76;text-transform:uppercase;letter-spacing:.6px;margin-bottom:4px;">Runs scored</div>
+          <div style="display:flex;align-items:baseline;gap:8px;">
+            <div class="num" style="font:800 48px system-ui;color:#f1f3f6;letter-spacing:-2px;">${scored}</div>
+            ${liveTotal ? `<div style="font:700 13px system-ui;color:#facc15;">+${liveTotal} live</div>` : ''}
+          </div>
+        </div>
+        <div style="text-align:right;padding-bottom:6px;">
+          <div style="font:600 10px system-ui;color:#565c68;text-transform:uppercase;letter-spacing:.6px;margin-bottom:3px;">Est. total</div>
+          <div class="num" style="font:700 22px system-ui;color:#737a86;">${estTotal}</div>
+        </div>
+      </div>
+      <div style="margin-top:14px;">
+        <div style="height:6px;border-radius:4px;background:#15181f;overflow:hidden;">
+          <div style="height:100%;width:${pct}%;background:linear-gradient(90deg,#4caf50,#34d399);border-radius:4px;transition:width .4s;"></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-top:5px;font:500 10px system-ui;color:#4d525d;">
+          <span>${pct}% of estimated total scored</span>
+          <span>${final.length} final · ${live.length} live · ${upcoming.length} upcoming</span>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:20px;">
+      ${statCard('Away Runs', lockedAway + liveAway, awaySubLine)}
+      ${statCard('Home Runs', lockedHome + liveHome, homeSubLine)}
+      ${statCard('Est. Total', estTotal, `${scored} scored · +${proj} proj`)}
+    </div>
+
+    <div style="font:700 10px system-ui;letter-spacing:1.4px;color:#565c68;text-transform:uppercase;padding:0 2px 6px;">Today's Games</div>
+    <div style="background:#11141a;border:1px solid #1e222b;border-radius:14px;padding:4px 12px;">
+      ${sorted.map(gameRow).join('') || '<div style="padding:16px 4px;color:#565c68;font:500 12px system-ui;">No games today.</div>'}
+    </div>
+  </div>`;
 }
 
 /* ---------- TRACK RECORD ---------- */
@@ -313,6 +440,8 @@ function render(scrollTop = true) {
     screen.innerHTML = renderToday();
     screen.querySelectorAll('[data-open]').forEach(el => el.onclick = () => openGame(+el.dataset.open));
     screen.querySelectorAll('[data-sort]').forEach(el => el.onclick = () => { state.sort = el.dataset.sort; render(false); });
+  } else if (state.tab === 'salami') {
+    screen.innerHTML = renderSalami();
   } else if (state.tab === 'track') {
     screen.innerHTML = renderTrack();
   } else {

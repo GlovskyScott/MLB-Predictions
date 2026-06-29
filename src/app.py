@@ -678,6 +678,21 @@ def _weather_str(g: dict) -> str:
     return " · ".join(parts)
 
 
+def _to_int_score(v) -> "int | None":
+    """Return v as int or None if absent/NaN."""
+    if v is None:
+        return None
+    try:
+        if pd.isna(v):
+            return None
+    except (TypeError, ValueError):
+        pass
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return None
+
+
 def _game_ui(g: dict) -> dict | None:
     """Project an enriched sim game into the JSON the Edge UI consumes.
 
@@ -701,6 +716,10 @@ def _game_ui(g: dict) -> dict | None:
     ma, mh = g.get('modal_away_score'), g.get('modal_home_score')
     if ma is None or mh is None:  # fall back to medians (real cores always have modal)
         ma, mh = round(g.get('median_away_score', 0)), round(g.get('median_home_score', 0))
+    status = g.get('status', '')
+    is_active = status in ('Final', 'In Progress', 'Game Over')
+    home_actual = _to_int_score(g.get('home_score')) if is_active else None
+    away_actual = _to_int_score(g.get('away_score')) if is_active else None
     return {
         'id': g.get('game_id'),
         'away': g.get('away_abbr'), 'home': g.get('home_abbr'),
@@ -724,6 +743,11 @@ def _game_ui(g: dict) -> dict | None:
         'awayP': g.get('away_pitcher', 'TBD'), 'homeP': g.get('home_pitcher', 'TBD'),
         'venue': g.get('venue_name', ''), 'weather': _weather_str(g),
         'awayLineup': lineup.get('away', []), 'homeLineup': lineup.get('home', []),
+        'status': status,
+        'homeActual': home_actual,
+        'awayActual': away_actual,
+        'projHome': round(g.get('median_home_score') or 0),
+        'projAway': round(g.get('median_away_score') or 0),
     }
 
 
