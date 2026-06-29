@@ -155,6 +155,11 @@ function renderSalami() {
   const scored = locked + liveTotal;
   const pct = estTotal > 0 ? Math.round(scored / estTotal * 100) : 0;
 
+  // Running pace: actual runs from finished/live games + projections for remaining
+  const paceTotal = scored + proj;
+  const delta = paceTotal - estTotal;
+  const hasStarted = final.length > 0 || live.length > 0;
+
   const statCard = (label, val, sub) =>
     `<div style="background:#11141a;border:1px solid #1e222b;border-radius:12px;padding:13px 14px;">
       <div style="font:600 9.5px system-ui;color:#646a76;text-transform:uppercase;letter-spacing:.6px;">${label}</div>
@@ -235,6 +240,18 @@ function renderSalami() {
           <span>${pct}% of estimated total scored</span>
           <span>${final.length} final · ${live.length} live · ${upcoming.length} upcoming</span>
         </div>
+        ${hasStarted ? (() => {
+          const absDelta = Math.abs(delta);
+          const isOver = delta > 0;
+          const isUnder = delta < 0;
+          const label = isOver ? `OVER +${absDelta}` : isUnder ? `UNDER −${absDelta}` : 'ON PACE';
+          const bg   = isOver ? 'rgba(52,211,153,.13)' : isUnder ? 'rgba(239,83,80,.13)' : 'rgba(255,255,255,.05)';
+          const col  = isOver ? '#34d399' : isUnder ? '#ef5350' : '#737a86';
+          return `<div style="display:flex;align-items:center;gap:8px;margin-top:10px;">
+            <span style="font:800 11px system-ui;letter-spacing:.6px;padding:4px 11px;border-radius:20px;background:${bg};color:${col};">${label}</span>
+            <span style="font:500 10px system-ui;color:#4d525d;">vs model est. ${estTotal} runs</span>
+          </div>`;
+        })() : ''}
       </div>
     </div>
 
