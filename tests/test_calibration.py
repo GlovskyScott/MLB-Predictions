@@ -91,23 +91,6 @@ def test_calibrate_core_calibrates_inning_pcts(mocker):
     assert core['home_innings_scoring_pct'][0] == 40.0
 
 
-def test_game_chat_line_includes_inning_breakdown():
-    import src.app as app
-    g = {
-        'away_abbr': 'BOS', 'home_abbr': 'NYY', 'away_name': 'Red Sox', 'home_name': 'Yankees',
-        'away_win_pct': 40.0, 'home_win_pct': 60.0,
-        'predicted_away_runs': 4.1, 'predicted_home_runs': 4.8,
-        'modal_away_score': 3, 'modal_home_score': 5, 'median_away_score': 4.0, 'median_home_score': 4.0,
-        'away_pitcher': 'A', 'home_pitcher': 'B',
-        'away_innings_scoring_pct': [30, 28, 29, 30, 30, 30, 27, 27, 25],
-        'home_innings_scoring_pct': [34, 30, 32, 32, 32, 31, 26, 26, 14],
-    }
-    line = app._game_chat_line(g)
-    assert 'by inning 1-9' in line
-    assert 'either team' in line
-    assert 'projected final score' in line and 'None' not in line
-
-
 def _synthetic():
     rng = np.random.RandomState(1)
     raw = rng.uniform(0.05, 0.95, 4000)

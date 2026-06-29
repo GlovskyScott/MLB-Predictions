@@ -31,7 +31,6 @@ from src.explanations import (
     _stream_ollama, _pregenerate_explanations, _stream_edge_summary,
     _edge_summary_cache,
 )
-from src.chat import stream_chat
 from src.training import (
     get_models as _get_models, get_inning_model as _get_inning_model,
     read_model_meta as _read_model_meta, reset_model_caches as _reset_model_caches,
@@ -392,125 +391,6 @@ def run_daily_simulation(sim_date: str = None) -> list[dict]:
     results.sort(key=lambda g: g.get('game_datetime') or '~')
 
     return results
-
-
-def _inning_scoring_lines(g: dict) -> str:
-    """Compact per-inning run-bucket distribution (0 / 1 / 2+ runs) for away,
-    home, and the combined (any team) line."""
-    ad, hd, cd = (g.get('away_innings_dist'), g.get('home_innings_dist'),
-                  g.get('combined_innings_dist'))
-    if ad and hd:
-        aw, hw = g.get('away_abbr', 'AWAY'), g.get('home_abbr', 'HOME')
-        fmt = lambda dist: " ".join(
-            f"i{j+1} {round(c[0])}/{round(c[1])}/{round(c[2])}" for j, c in enumerate(dist))
-        out = (f"Per-inning run distribution P(0/1/2+ runs) by inning 1-9 — "
-               f"{aw}: {fmt(ad)}; {hw}: {fmt(hd)}")
-        if cd:
-            out += f"; both teams combined: {fmt(cd)}"
-        return out + " (percent)."
-    # Legacy cores (binary P(score>=1)).
-    ap, hp = g.get('away_innings_scoring_pct'), g.get('home_innings_scoring_pct')
-    if not ap or not hp:
-        return ""
-    aw, hw = g.get('away_abbr', 'AWAY'), g.get('home_abbr', 'HOME')
-    either = [round((1 - (1 - a / 100) * (1 - h / 100)) * 100) for a, h in zip(ap, hp)]
-    fmt = lambda xs: "/".join(f"{round(x)}" for x in xs)
-    return (f"P(team scores >=1 run) by inning 1-9 — {aw}: {fmt(ap)}; "
-            f"{hw}: {fmt(hp)}; either team: {fmt(either)} (percent).")
-
-
-def _game_chat_line(g: dict) -> str:
-    """A factual block about a game for the chatbot context: predictions, the
-    full inning-by-inning scoring breakdown, venue/weather, lines and edges."""
-    m = g.get('lines') or {}
-    mk = g.get('market') or {}
-    w = g.get('weather') or {}
-    aw, hw = g.get('away_abbr', '?'), g.get('home_abbr', '?')
-    parts = [
-        f"{aw} @ {hw} ({g.get('away_name')} at {g.get('home_name')}):",
-        f"model win% {aw} {g.get('away_win_pct')}% / {hw} {g.get('home_win_pct')}%,",
-        f"projected final score (median) {aw} {g.get('median_away_score')}-"
-        f"{hw} {g.get('median_home_score')}, most-likely "
-        f"{g.get('modal_away_score')}-{g.get('modal_home_score')};",
-        f"SP {g.get('away_pitcher')} vs {g.get('home_pitcher')};",
-    ]
-    venue = g.get('venue_name')
-    if venue:
-        cond = "indoor dome" if w.get('is_dome') else (
-            f"{w.get('temperature_f')}F, wind {w.get('wind_speed_mph')}mph" if w.get('temperature_f') is not None else "")
-        parts.append(f"venue {venue} ({g.get('elevation_ft', '?')} ft{', ' + cond if cond else ''});")
-    inn = _inning_scoring_lines(g)
-    if inn:
-        parts.append(inn)
-    if m:
-        parts.append(f"model fair moneyline: {aw} {m.get('ml_away')}/{hw} {m.get('ml_home')};")
-    if mk:
-        side, pct = mk.get('edge_ml_side'), mk.get('edge_ml_pct') or 0
-        side_price = mk.get('ml_home') if side == hw else mk.get('ml_away')
-        fair_price = (m.get('ml_home') if side == hw else m.get('ml_away')) if m else None
-        side_wp = g.get('home_win_pct') if side == hw else g.get('away_win_pct')
-        if pct >= _EDGE_MIN_PCT:
-            why = (f" WHY (state it this way, exact signs): the model gives {side} a {side_wp}% "
-                   f"win chance, so its fair price is {fair_price}; the market only asks "
-                   f"{side_price}, a more generous number than fair — that gap is the +{pct}% "
-                   f"edge.") if fair_price is not None else ""
-            verdict = (f"COMPUTED VERDICT: value side is {side} at {side_price} "
-                       f"(model edge +{pct}%). The bet, if any, is {side} at {side_price} — "
-                       f"never the other side, never a different price.{why}")
-        else:
-            verdict = ("COMPUTED VERDICT: NO BET — no side clears the "
-                       f"{_EDGE_MIN_PCT}% edge threshold; model and market roughly agree.")
-        parts.append(
-            f"ESPN avg moneyline ({mk.get('n_books', 0)} books): "
-            f"{aw} {mk.get('ml_away')}/{hw} {mk.get('ml_home')}. {verdict}"
-        )
-    return " ".join(p for p in parts if p)
-
-
-def _build_chat_context(focus_game_id: int = None) -> str:
-    today = date.today().strftime('%Y-%m-%d')
-    meta = _read_model_meta()
-    cur = _current_version()
-    model_name = next((e.get('name') for e in _pred.read_versions(_DATA_DIR)
-                       if e.get('version') == cur), None) or f"v{meta.get('feature_version', '?')}"
-    out = [
-        f"DATE: {today}.",
-        f"MODEL: {model_name} — three XGBoost models (home-win classifier + two run "
-        f"regressors) on a {len(FEATURE_COLUMNS)}-feature vector (pitcher ERA/FIP/WHIP, "
-        f"team wOBA/OPS, bullpen, park factors, elevation, weather, handedness, rest, "
-        f"recent form), trained on {meta.get('n_games', '?')} completed 2024–2026 games. "
-        f"Win prob + run totals come from a 1000-run Monte Carlo (negative-binomial) per game; "
-        f"the inning breakdown is a separate classifier. The app supports the moneyline market "
-        f"only: the fair (no-vig) moneyline is the model's win%, and the 'edge' compares it to "
-        f"the average ESPN sportsbook moneyline.",
-    ]
-    games = [g for g in _simulation_cache if not g.get('error')]
-    if games:
-        out.append("\nTODAY'S GAMES:")
-        out.extend(f"- {_game_chat_line(g)}" for g in games)
-    else:
-        out.append("\nNo games scheduled today.")
-
-    last7, last90 = _aggregate_days(7), _aggregate_days(90)
-    out.append(
-        f"\nHISTORICAL ACCURACY (in-sample backtest): last 7 days "
-        f"{last7.get('winner_accuracy')}% winners over {last7.get('total_games')} games "
-        f"(±{last7.get('avg_score_err')} avg run error); last 90 days "
-        f"{last90.get('winner_accuracy')}% over {last90.get('total_games')} games."
-    )
-    if _results_cache and _results_cache.get('games'):
-        y = _results_cache
-        out.append(f"YESTERDAY ({_last_results_date}): {y.get('winner_accuracy')}% winners, "
-                   f"{y.get('n_completed')} games graded.")
-
-    if focus_game_id:
-        g = next((x for x in _simulation_cache if x.get('game_id') == focus_game_id), None)
-        if g:
-            expl = _explanation_cache.get(focus_game_id)
-            out.append(f"\nFOCUS GAME the user wants to discuss: {g.get('away_name')} @ "
-                       f"{g.get('home_name')}. Full model analysis: "
-                       f"{expl or '(analysis still generating)'}")
-    return "\n".join(out)
 
 
 def _is_final_game(g) -> bool:
@@ -1041,23 +921,6 @@ def create_app(testing: bool = False) -> Flask:
             days.append(day)
         totals['accuracy'] = round(100 * totals['correct'] / totals['n'], 1) if totals['n'] else 0
         return render_template('history.html', days=days, totals=totals, version=version)
-
-    @app.route('/chat', methods=['POST'])
-    def chat():
-        data = request.get_json(silent=True) or {}
-        # cap history so the context window isn't blown; keep only role/content
-        messages = [
-            {'role': m.get('role'), 'content': str(m.get('content', ''))[:2000]}
-            for m in (data.get('messages') or [])[-12:]
-            if m.get('role') in ('user', 'assistant') and m.get('content')
-        ]
-        if not messages:
-            abort(400)
-        game_id = data.get('game_id')
-        context = _build_chat_context(int(game_id) if game_id else None)
-        return Response(stream_with_context(stream_chat(messages, context)),
-                        mimetype='text/plain; charset=utf-8',
-                        headers={'X-Accel-Buffering': 'no', 'Cache-Control': 'no-cache'})
 
     @app.route('/edge/<int:game_id>')
     def edge(game_id: int):
